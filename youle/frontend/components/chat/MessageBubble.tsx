@@ -2,6 +2,8 @@
 
 // 单条消息渲染:气泡 / 卡片 / 互动 / HITL
 // 严肃场景由 conversation.serious_mode 控制(铁律 §19:严肃场景关闭表情)
+// 头像悬停 / 双击触发 AgentProfileCard(v4 §232-241)
+import { useRef, useState } from 'react';
 import clsx from 'clsx';
 import type {
   AgentCardMessage,
@@ -15,12 +17,36 @@ import { TaskCard } from '@/components/chat/TaskCard';
 import { ScriptApproval } from '@/components/hitl/ScriptApproval';
 import { ImageSelection } from '@/components/hitl/ImageSelection';
 import { VideoFinalReview } from '@/components/hitl/VideoFinalReview';
+import { AgentProfileCard } from '@/components/chat/AgentProfileCard';
 import { highlightMentions } from '@/lib/mention';
+import { useOpenPrivateChat } from '@/lib/api';
+import { useRouter } from 'next/navigation';
 
 export function MessageBubble({ message }: { message: Message }) {
   const meta = ROLES[message.role];
   const isUser = message.role === 'user';
   const isSystem = message.kind === 'system';
+  const avatarRef = useRef<HTMLSpanElement>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
+  const openPrivate = useOpenPrivateChat();
+  const router = useRouter();
+
+  function openProfile() {
+    if (isUser || isSystem) return;
+    setAnchor(avatarRef.current?.getBoundingClientRect() ?? null);
+    setProfileOpen(true);
+  }
+
+  function startPrivateChat() {
+    if (isUser || isSystem) return;
+    openPrivate.mutate(message.role, {
+      onSuccess: (conv) => {
+        router.push(`/chat/${(conv as { id: string }).id}`);
+      },
+    });
+  }
 
   if (isSystem) {
     return (
@@ -40,11 +66,32 @@ export function MessageBubble({ message }: { message: Message }) {
       )}
     >
       <span
-        className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded text-[12px] font-bold text-white"
+        ref={avatarRef}
+        className={clsx(
+          'flex h-9 w-9 flex-shrink-0 items-center justify-center rounded text-[12px] font-bold text-white',
+          !isUser && 'cursor-pointer ring-wechat-green hover:ring-2',
+        )}
         style={{ background: meta.color }}
+        onMouseEnter={() => {
+          if (isUser || isSystem) return;
+          hoverTimer.current = window.setTimeout(openProfile, 300);
+        }}
+        onMouseLeave={() => {
+          if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+        }}
+        onDoubleClick={openProfile}
       >
         {meta.initial}
       </span>
+
+      {profileOpen && (
+        <AgentProfileCard
+          data={{ role: message.role }}
+          anchorRect={anchor}
+          onClose={() => setProfileOpen(false)}
+          onPrivateChat={startPrivateChat}
+        />
+      )}
 
       <div
         className={clsx(

@@ -7,7 +7,19 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, conversations, flywheel, hitl, messages, tasks, upload, ws
+from app.api import (
+    auth,
+    conversations,
+    flywheel,
+    hitl,
+    library,
+    messages,
+    skills as skills_api,
+    support,
+    tasks,
+    upload,
+    ws,
+)
 from app.config import settings
 from app.logging import configure_logging
 from app.mcp_client import close_mcp_client
@@ -62,6 +74,9 @@ app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(upload.router, prefix="/api/upload", tags=["upload"])
 app.include_router(hitl.router, prefix="/api/tasks", tags=["hitl"])
 app.include_router(flywheel.router, prefix="/api", tags=["flywheel"])
+app.include_router(support.router, prefix="/api", tags=["support"])
+app.include_router(library.router, prefix="/api", tags=["library"])
+app.include_router(skills_api.router, prefix="/api", tags=["skills"])
 
 # ── WebSocket ──
 app.include_router(ws.router, tags=["ws"])

@@ -55,6 +55,24 @@ class OSSService:
         url = await asyncio.to_thread(_generate)
         return object_key, url, expires_in
 
+    async def put_object(
+        self, *, bucket: str | None, key: str, body: bytes, content_type: str
+    ) -> str:
+        target_bucket = bucket or settings.OSS_BUCKET
+
+        def _put() -> None:
+            self._client().put_object(
+                Bucket=target_bucket, Key=key, Body=body, ContentType=content_type
+            )
+
+        await asyncio.to_thread(_put)
+        return f"oss://{target_bucket}/{key}"
+
+    @classmethod
+    async def put(cls, *, bucket: str | None, key: str, body: bytes, content_type: str) -> str:
+        """模块级简便接口(供 flywheel runners 用)。"""
+        return await oss_service.put_object(bucket=bucket, key=key, body=body, content_type=content_type)
+
     async def get_object_url(self, object_key: str, expires_in: int = 3600) -> str:
         def _gen() -> str:
             return self._client().generate_presigned_url(  # type: ignore[no-any-return]

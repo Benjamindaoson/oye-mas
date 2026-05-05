@@ -8,6 +8,7 @@ import { useEffect } from 'react';
 import { MessageList } from '@/components/chat/MessageList';
 import { Composer } from '@/components/chat/Composer';
 import { ChatHeader } from '@/components/chat/ChatHeader';
+import { QuotaWidget } from '@/components/layout/QuotaWidget';
 import { useConversationStore } from '@/stores/conversation';
 import { useMessages, useMembers } from '@/lib/api';
 
@@ -17,6 +18,8 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   const setMembers = useConversationStore((s) => s.setMembers);
   const { data: messages } = useMessages(conversationId);
   const { data: members } = useMembers(conversationId);
+  const conv = useConversationStore((s) => s.list.find((c) => c.id === conversationId));
+  const isMainSession = conv?.kind === 'main_session';
 
   useEffect(() => {
     setCurrent(conversationId);
@@ -33,6 +36,11 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   return (
     <div className="flex h-screen w-full min-w-0 flex-col bg-wechat-bg">
       <ChatHeader conversationId={conversationId} />
+      {isMainSession && (
+        <div className="flex-shrink-0 border-b border-wechat-line bg-white px-4 py-2">
+          <QuotaWidget compact />
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto px-8 py-4">
         <MessageList conversationId={conversationId} />
       </div>

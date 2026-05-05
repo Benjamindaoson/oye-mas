@@ -62,6 +62,13 @@ async def answer_clarification(
     fields[body.field] = body.value
     task.collected_fields = fields
     await session.commit()
+
+    # 飞轮信号 2:聚合用户偏好(连续 3 次同选自动套用)
+    from app.services.flywheel import flywheel
+
+    await flywheel.emit_preference_update(
+        session, user_id=task.user_id, fields={body.field: body.value}
+    )
     return {"status": "accepted"}
 
 

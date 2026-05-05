@@ -2,7 +2,9 @@
 
 // 群成员快查(顶部按钮 + hover 弹卡)— ADR-013
 // 主会话 7 角色 / 普通群 5 角色(无 HR / 财务经理)
-import { useState } from 'react';
+// 点头像/名字 → 弹出 AgentProfileCard(v4 §232-241)
+import { useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import clsx from 'clsx';
 import { Users } from 'lucide-react';
 import {
@@ -14,9 +16,16 @@ import {
   type RoleKey,
 } from '@/lib/agents';
 import { useConversationStore, type AgentMember } from '@/stores/conversation';
+import { AgentProfileCard } from '@/components/chat/AgentProfileCard';
+import { useOpenPrivateChat } from '@/lib/api';
 
 export function GroupMembers({ conversationId }: { conversationId: string }) {
   const [open, setOpen] = useState(false);
+  const [activeRole, setActiveRole] = useState<RoleKey | null>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const router = useRouter();
+  const openPrivate = useOpenPrivateChat();
+
   const conv = useConversationStore((s) =>
     s.list.find((c) => c.id === conversationId),
   );
@@ -31,6 +40,21 @@ export function GroupMembers({ conversationId }: { conversationId: string }) {
 
   const memberMap = new Map(members.map((m) => [m.id, m] as const));
   const roles = expectedRoles.map((r) => memberMap.get(r) ?? { id: r, status: 'idle' as const });
+
+  function showCard(role: RoleKey, rect: DOMRect | null) {
+    setActiveRole(role);
+    setAnchor(rect);
+    setOpen(false);
+  }
+
+  function startPrivate(role: RoleKey) {
+    openPrivate.mutate(role, {
+      onSuccess: (conv) => {
+        setActiveRole(null);
+        router.push(`/chat/${(conv as { id: string }).id}`);
+      },
+    });
+  }
 
   return (
     <div className="relative">
@@ -52,20 +76,47 @@ export function GroupMembers({ conversationId }: { conversationId: string }) {
             </div>
             <ul className="flex flex-col gap-0.5">
               {roles.map((m) => (
-                <MemberRow key={m.id} role={m.id} status={m.status} />
+                <MemberRow
+                  key={m.id}
+                  role={m.id}
+                  status={m.status}
+                  onPick={(rect) => showCard(m.id, rect)}
+                />
               ))}
             </ul>
           </div>
         </>
       )}
+
+      {activeRole && (
+        <AgentProfileCard
+          data={{ role: activeRole }}
+          anchorRect={anchor}
+          onClose={() => setActiveRole(null)}
+          onPrivateChat={() => startPrivate(activeRole)}
+        />
+      )}
     </div>
   );
 }
 
-function MemberRow({ role, status }: { role: RoleKey; status: AgentMember['status'] }) {
+function MemberRow({
+  role,
+  status,
+  onPick,
+}: {
+  role: RoleKey;
+  status: AgentMember['status'];
+  onPick: (rect: DOMRect | null) => void;
+}) {
   const meta = ROLES[role];
+  const ref = useRef<HTMLLIElement>(null);
   return (
-    <li className="flex items-center gap-2 rounded px-1.5 py-1.5 hover:bg-neutral-50">
+    <li
+      ref={ref}
+      onClick={() => onPick(ref.current?.getBoundingClientRect() ?? null)}
+      className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 hover:bg-neutral-50"
+    >
       <span
         className="grid h-7 w-7 flex-shrink-0 place-items-center rounded text-[10px] font-bold text-white"
         style={{ background: meta.color }}

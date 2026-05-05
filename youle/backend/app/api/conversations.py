@@ -17,7 +17,9 @@ from app.api.auth import get_current_user_id
 from app.db import get_session
 from app.models.conversation import Conversation
 from app.models.mode_switch_log import ModeSwitchLog
+from app.models.user import User
 from app.schemas.ws import WSEventType
+from app.services.quota_enforce import QuotaExceeded, enforce_group_creation
 
 router = APIRouter()
 
@@ -68,6 +70,18 @@ async def create_conversation(
     user_id: UUID = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_session),
 ) -> Conversation:
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")
+    # 工作群创建走配额闸门(v4 #345);main_session / private_chat 不计
+    if body.mode == "group":
+        try:
+            await enforce_group_creation(session, user=user)
+        except QuotaExceeded as e:
+            raise HTTPException(
+                status.HTTP_402_PAYMENT_REQUIRED,
+                detail={"code": e.code, "detail": e.detail},
+            ) from e
     conv = Conversation(
         user_id=user_id,
         name=body.name or "新会话",
@@ -90,6 +104,80 @@ async def get_conversation(
     if conv is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
     return conv
+
+
+VALID_PRIVATE_AGENTS = {
+    "ceo_assistant",
+    "agent_1",
+    "agent_2",
+    "agent_3",
+    "agent_4",
+    "hr",
+    "finance_manager",
+}
+
+
+@router.post("/private-chat/{agent_id}", response_model=ConversationOut)
+async def open_private_chat(
+    agent_id: str,
+    user_id: UUID = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+) -> Conversation:
+    """获取或创建用户与某 Agent 的私聊会话(v4 §237-240)。
+
+    幂等:同一用户 + 同一 agent_id 永远只有 1 个 active 私聊。
+    """
+    if agent_id not in VALID_PRIVATE_AGENTS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"未知 Agent:{agent_id}")
+    existing = (
+        await session.execute(
+            select(Conversation).where(
+                Conversation.user_id == user_id,
+                Conversation.mode == "private_chat",
+                Conversation.private_chat_agent_id == agent_id,
+                Conversation.status == "active",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    conv = Conversation(
+        user_id=user_id,
+        name=f"与 {agent_id} 的私聊",
+        mode="private_chat",
+        private_chat_agent_id=agent_id,
+        status="active",
+    )
+    session.add(conv)
+    await session.commit()
+    await session.refresh(conv)
+    return conv
+
+
+@router.get("/{conversation_id}/brief")
+async def get_brief(
+    conversation_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None or conv.user_id != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
+    return dict(conv.brief or {"完成度": 0.0, "字段": {}, "决策日志": []})
+
+
+@router.post("/{conversation_id}/brief/reset")
+async def reset_brief(
+    conversation_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None or conv.user_id != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
+    conv.brief = {"完成度": 0.0, "字段": {}, "决策日志": []}
+    await session.commit()
+    return dict(conv.brief)
 
 
 @router.post("/{conversation_id}/switch-work-mode")

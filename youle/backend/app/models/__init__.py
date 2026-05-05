@@ -6,6 +6,7 @@ from app.models.bgm import BGMLibrary
 from app.models.conversation import Conversation
 from app.models.emotion_signal import EmotionSignal
 from app.models.hitl_gate import HITLGate
+from app.models.material import Material, PromptItem
 from app.models.message import Message
 from app.models.mode_switch_log import ModeSwitchLog
 from app.models.prompt_improvement import PromptImprovementCandidate
@@ -24,7 +25,9 @@ __all__ = [
     "Conversation",
     "EmotionSignal",
     "HITLGate",
+    "Material",
     "Message",
+    "PromptItem",
     "ModeSwitchLog",
     "PromptImprovementCandidate",
     "QuotaUsage",
