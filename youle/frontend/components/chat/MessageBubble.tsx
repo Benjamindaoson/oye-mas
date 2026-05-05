@@ -18,9 +18,11 @@ import { ScriptApproval } from '@/components/hitl/ScriptApproval';
 import { ImageSelection } from '@/components/hitl/ImageSelection';
 import { VideoFinalReview } from '@/components/hitl/VideoFinalReview';
 import { AgentProfileCard } from '@/components/chat/AgentProfileCard';
+import { MessageContextMenu } from '@/components/chat/MessageContextMenu';
 import { highlightMentions } from '@/lib/mention';
 import { useOpenPrivateChat } from '@/lib/api';
 import { useRouter } from 'next/navigation';
+import { useConversationStore } from '@/stores/conversation';
 
 export function MessageBubble({ message }: { message: Message }) {
   const meta = ROLES[message.role];
@@ -32,6 +34,11 @@ export function MessageBubble({ message }: { message: Message }) {
   const hoverTimer = useRef<number | undefined>(undefined);
   const openPrivate = useOpenPrivateChat();
   const router = useRouter();
+  const setQuoted = useConversationStore((s) => s.setQuoted);
+  const toggleStar = useConversationStore((s) => s.toggleStar);
+  const withdraw = useConversationStore((s) => s.withdrawMessage);
+  const starred = useConversationStore((s) => s.starred.includes(message.id));
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   function openProfile() {
     if (isUser || isSystem) return;
@@ -48,6 +55,49 @@ export function MessageBubble({ message }: { message: Message }) {
     });
   }
 
+  function openMenu(e: React.MouseEvent) {
+    if (isSystem) return;
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY });
+  }
+
+  const longPressTimer = useRef<number | undefined>(undefined);
+  function startLongPress(e: React.PointerEvent) {
+    if (isSystem) return;
+    const cx = e.clientX;
+    const cy = e.clientY;
+    longPressTimer.current = window.setTimeout(() => setMenu({ x: cx, y: cy }), 500);
+  }
+  function cancelLongPress() {
+    if (longPressTimer.current) window.clearTimeout(longPressTimer.current);
+  }
+
+  const menuActions = {
+    onCopy: () => {
+      void navigator.clipboard.writeText(message.text || '');
+    },
+    onQuote: () => {
+      setQuoted(message.conversation_id, {
+        messageId: message.id,
+        preview: (message.text || '').slice(0, 80),
+        role: message.role,
+      });
+    },
+    onForward: () => {
+      const text = `转发自 ${meta.name}:\n${message.text || ''}`;
+      void navigator.clipboard.writeText(text);
+      alert('已复制为转发文本');
+    },
+    onStar: () => toggleStar(message.id),
+    onWithdraw: isUser ? () => withdraw(message.conversation_id, message.id) : undefined,
+    onLocate: () => {
+      const el = document.getElementById(`msg-${message.id}`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el?.classList.add('ring-2', 'ring-wechat-green');
+      setTimeout(() => el?.classList.remove('ring-2', 'ring-wechat-green'), 1500);
+    },
+  };
+
   if (isSystem) {
     return (
       <div className="my-3 text-center">
@@ -60,9 +110,15 @@ export function MessageBubble({ message }: { message: Message }) {
 
   return (
     <div
+      id={`msg-${message.id}`}
+      onContextMenu={openMenu}
+      onPointerDown={startLongPress}
+      onPointerUp={cancelLongPress}
+      onPointerLeave={cancelLongPress}
       className={clsx(
-        'mb-3.5 flex animate-fade-up items-start gap-2.5',
+        'mb-3.5 flex animate-fade-up items-start gap-2.5 transition-shadow',
         isUser ? 'flex-row-reverse' : 'flex-row',
+        starred && 'ring-1 ring-amber-300',
       )}
     >
       <span
@@ -90,6 +146,15 @@ export function MessageBubble({ message }: { message: Message }) {
           anchorRect={anchor}
           onClose={() => setProfileOpen(false)}
           onPrivateChat={startPrivateChat}
+        />
+      )}
+      {menu && (
+        <MessageContextMenu
+          x={menu.x}
+          y={menu.y}
+          isUser={isUser}
+          actions={menuActions}
+          onClose={() => setMenu(null)}
         />
       )}
 

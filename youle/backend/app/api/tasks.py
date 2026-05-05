@@ -72,6 +72,35 @@ async def answer_clarification(
     return {"status": "accepted"}
 
 
+class ConflictResolutionRequest(BaseModel):
+    action: str  # queue / cancel_current / new_group
+
+
+@router.post("/{task_id}/resolve-conflict")
+async def resolve_conflict(
+    task_id: UUID,
+    body: ConflictResolutionRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """一群一任务冲突解决(v4 #231)。"""
+    task = await session.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    if body.action == "cancel_current":
+        from datetime import UTC, datetime
+
+        task.status = "cancelled"
+        task.cancelled_at = datetime.now(UTC)
+        await session.commit()
+        return {"status": "cancelled", "next": "send_message_again"}
+    if body.action == "queue":
+        # 简化:仅标记 hint;真排队由 runner 在当前完成后扫描 conversation 内 pending
+        return {"status": "queued"}
+    if body.action == "new_group":
+        return {"status": "client_navigate", "next": "create_new_group"}
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, f"未知操作:{body.action}")
+
+
 @router.post("/{task_id}/interrupt")
 async def interrupt_task(
     task_id: UUID,

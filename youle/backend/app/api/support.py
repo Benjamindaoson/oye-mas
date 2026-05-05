@@ -48,6 +48,17 @@ class SupportResponse(BaseModel):
 
 
 # ── 配额查询 ──
+@router.get("/agent-status/me")
+async def my_agent_status(
+    user_id: UUID = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, str]]:
+    """所有 Agent 的派生状态(working/idle/fishing/training)— v4 #109-113。"""
+    from app.services.agent_status import list_status
+
+    return await list_status(session, user_id=user_id)
+
+
 @router.get("/quota/me")
 async def my_quota(
     user_id: UUID = Depends(get_current_user_id),

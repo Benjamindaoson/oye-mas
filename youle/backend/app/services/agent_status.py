@@ -1,0 +1,86 @@
+"""Agent 工作状态计算(v4 §11 拟人化)。
+
+状态枚举:
+- working   正在执行任务
+- idle      空闲(< 30min)
+- fishing   摸鱼中(空闲 >30min,v4 #112)
+- training  进修中(用户喂语料,V2)
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from typing import Literal
+from uuid import UUID
+
+import structlog
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.agent_status import AgentStatus
+
+log = structlog.get_logger(__name__)
+
+Status = Literal["working", "idle", "fishing", "training"]
+FISHING_THRESHOLD = timedelta(minutes=30)
+
+VALID_AGENTS = ("agent_1", "agent_2", "agent_3", "agent_4", "ceo_assistant", "hr", "finance_manager")
+
+
+def derive_status(*, current: Status, last_active_at: datetime) -> Status:
+    """从原始状态 + 最近活跃时间 推派生状态。"""
+    if current == "working" or current == "training":
+        return current
+    now = datetime.now(UTC)
+    if now - last_active_at >= FISHING_THRESHOLD:
+        return "fishing"
+    return "idle"
+
+
+async def set_status(
+    session: AsyncSession, *, user_id: UUID, agent_id: str, status: Status
+) -> None:
+    if agent_id not in VALID_AGENTS:
+        return
+    stmt = (
+        pg_insert(AgentStatus)
+        .values(
+            user_id=user_id,
+            agent_id=agent_id,
+            status=status,
+            last_active_at=datetime.now(UTC),
+        )
+        .on_conflict_do_update(
+            index_elements=["user_id", "agent_id"],
+            set_={
+                "status": status,
+                "last_active_at": datetime.now(UTC),
+            },
+        )
+    )
+    await session.execute(stmt)
+    await session.commit()
+
+
+async def list_status(
+    session: AsyncSession, *, user_id: UUID
+) -> list[dict[str, str]]:
+    rows = (
+        await session.execute(
+            select(AgentStatus).where(AgentStatus.user_id == user_id)
+        )
+    ).scalars().all()
+    by_agent: dict[str, AgentStatus] = {r.agent_id: r for r in rows}
+    out: list[dict[str, str]] = []
+    for aid in VALID_AGENTS:
+        row = by_agent.get(aid)
+        if row is None:
+            out.append({"agent_id": aid, "status": "idle"})
+            continue
+        derived = derive_status(
+            current=row.status,  # type: ignore[arg-type]
+            last_active_at=row.last_active_at,
+        )
+        out.append({"agent_id": aid, "status": derived})
+    return out

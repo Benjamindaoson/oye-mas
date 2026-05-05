@@ -42,6 +42,18 @@
 @theme {
   --animate-fade-up: fade-up 240ms ease-out both;
   --animate-blink: blink 1.06s steps(1, end) infinite;
+  --animate-slide-in-left: slide-in-left 220ms ease-out both;
+  --animate-slide-in-right: slide-in-right 220ms ease-out both;
+}
+
+@keyframes slide-in-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
 }
 
 /* === Base ======================================================= */

@@ -180,13 +180,30 @@ export const MOCK_MESSAGES: Record<string, Message[]> = {
   ],
 };
 
+export type ExecActionType =
+  | 'terminal'
+  | 'read'
+  | 'create'
+  | 'thinking'
+  | 'search'
+  | 'generate';
+
 export interface ExecStep {
   id: string;
   label: string;
   status: 'done' | 'running' | 'pending';
+  /** v4 §22 #197-202:6 种动作类型 */
+  action?: ExecActionType;
+  /** 操作对象(文件名 / 关键词 / 产物类型)*/
+  target?: string;
   detail?: string;
   word_count?: string;
   progress?: number;
+  /** 三层抽屉:展开看终端输出 / 文件内容 / 思考过程 / 产物预览 */
+  expanded_detail?: {
+    kind: 'terminal' | 'text' | 'thinking' | 'preview';
+    content: string;
+  };
 }
 
 export interface ExecGroup {

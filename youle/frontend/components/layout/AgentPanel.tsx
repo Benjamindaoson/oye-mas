@@ -2,13 +2,33 @@
 
 // 400px 执行流右栏(对齐 frontend_001 agent-panel 的视觉)
 // V1 行为:Auto 模式自动展开,Plan/Ask 默认折叠(实际折叠由 AppShell 控制是否渲染)
-// 数据:同时合并 task store 实时步骤 与 mock 演示分组(后端缺失时退化)
+// v4 §22 #195-210:6 种动作类型 + 三层抽屉(阶段 / 子任务 / 实时细节)
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, X } from 'lucide-react';
+import {
+  BrainCircuit,
+  Check,
+  ChevronDown,
+  Eye,
+  FileText,
+  Search,
+  Sparkles,
+  Terminal,
+  Wand2,
+  X,
+} from 'lucide-react';
 import clsx from 'clsx';
 import { useTaskStore } from '@/stores/task';
 import { ROLES, type RoleKey } from '@/lib/agents';
-import { MOCK_EXEC_GROUPS, type ExecGroup, type ExecStep } from '@/lib/mock-data';
+import { MOCK_EXEC_GROUPS, type ExecActionType, type ExecGroup, type ExecStep } from '@/lib/mock-data';
+
+const ACTION_META: Record<ExecActionType, { icon: typeof Terminal; label: string }> = {
+  terminal: { icon: Terminal, label: '运行终端' },
+  read:     { icon: FileText, label: '阅读' },
+  create:   { icon: Sparkles, label: '创建' },
+  thinking: { icon: BrainCircuit, label: '思考中' },
+  search:   { icon: Search, label: '搜索' },
+  generate: { icon: Wand2, label: '生成' },
+};
 
 export function AgentPanel() {
   const liveSteps = useTaskStore((s) => s.currentSteps);
@@ -138,6 +158,10 @@ function StepRow({
   isLast: boolean;
 }) {
   const cursorVisible = useBlinkingCursor();
+  const [open, setOpen] = useState(false);
+  const ActionIcon = step.action ? ACTION_META[step.action].icon : null;
+  const actionLabel = step.action ? ACTION_META[step.action].label : null;
+
   return (
     <li className="flex items-start gap-0">
       <div className="flex w-[22px] flex-shrink-0 flex-col items-center pt-2">
@@ -166,10 +190,20 @@ function StepRow({
         )}
       </div>
       <div className={clsx('min-w-0 flex-1 pl-2 pt-1.5', isLast ? 'pb-1' : 'pb-2.5')}>
-        <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => step.expanded_detail && setOpen((v) => !v)}
+          disabled={!step.expanded_detail}
+          className="flex w-full items-center gap-1.5 text-left disabled:cursor-default"
+        >
+          {ActionIcon && actionLabel && (
+            <span className="flex flex-shrink-0 items-center gap-0.5 rounded-sm bg-neutral-100 px-1 py-0.5 text-[9px] text-wechat-sub">
+              <ActionIcon size={9} /> {actionLabel}
+            </span>
+          )}
           <span
             className={clsx(
-              'text-[12px]',
+              'flex-1 truncate text-[12px]',
               step.status === 'pending'
                 ? 'text-wechat-mute'
                 : step.status === 'running'
@@ -178,11 +212,21 @@ function StepRow({
             )}
           >
             {step.label}
+            {step.target && <span className="text-wechat-mute"> · {step.target}</span>}
           </span>
           {step.status !== 'pending' && step.word_count && (
-            <span className="pill">{step.word_count}</span>
+            <span className="pill flex-shrink-0">{step.word_count}</span>
           )}
-        </div>
+          {step.expanded_detail && (
+            <ChevronDown
+              size={11}
+              className={clsx(
+                'flex-shrink-0 text-wechat-mute transition-transform',
+                open && 'rotate-180',
+              )}
+            />
+          )}
+        </button>
         {step.status === 'running' && (
           <>
             {step.progress !== undefined && (
@@ -195,10 +239,10 @@ function StepRow({
             )}
             {step.detail && (
               <div className="mt-1 flex items-center gap-px text-[11px] text-neutral-600">
-                <span>{step.detail}</span>
+                <span className="truncate">{step.detail}</span>
                 <span
                   className={clsx(
-                    'inline-block h-[11px] w-[1.5px] rounded-sm bg-wechat-fg transition-opacity',
+                    'inline-block h-[11px] w-[1.5px] flex-shrink-0 rounded-sm bg-wechat-fg transition-opacity',
                     cursorVisible ? 'opacity-100' : 'opacity-0',
                   )}
                 />
@@ -208,6 +252,33 @@ function StepRow({
         )}
         {step.status === 'done' && step.detail && !step.word_count && (
           <div className="mt-px text-[11px] text-wechat-sub">{step.detail}</div>
+        )}
+        {open && step.expanded_detail && (
+          <div className="mt-1.5 overflow-hidden rounded-sm border border-neutral-200 bg-neutral-50">
+            <div className="flex items-center gap-1 border-b border-neutral-200 bg-white px-2 py-1 text-[10px] text-wechat-mute">
+              {step.expanded_detail.kind === 'terminal' && <Terminal size={10} />}
+              {step.expanded_detail.kind === 'text' && <FileText size={10} />}
+              {step.expanded_detail.kind === 'thinking' && <BrainCircuit size={10} />}
+              {step.expanded_detail.kind === 'preview' && <Eye size={10} />}
+              {step.expanded_detail.kind === 'terminal'
+                ? '终端输出'
+                : step.expanded_detail.kind === 'text'
+                  ? '文件内容'
+                  : step.expanded_detail.kind === 'thinking'
+                    ? '思考过程'
+                    : '产物预览'}
+            </div>
+            <pre
+              className={clsx(
+                'max-h-40 overflow-y-auto whitespace-pre-wrap break-words p-2 text-[11px] leading-[1.55]',
+                step.expanded_detail.kind === 'terminal'
+                  ? 'bg-neutral-900 font-mono text-green-300'
+                  : 'text-wechat-fg',
+              )}
+            >
+              {step.expanded_detail.content}
+            </pre>
+          </div>
         )}
       </div>
     </li>

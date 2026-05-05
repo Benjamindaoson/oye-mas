@@ -228,6 +228,33 @@ async def send_message(
             },
         )
 
+    # 一群一任务约束(v4 #230-231):同 conversation 已有 active task 则给冲突选项
+    from sqlalchemy import select as _select
+
+    active = (
+        await session.execute(
+            _select(Task)
+            .where(
+                Task.conversation_id == conv.id,
+                Task.status.in_(["pending", "running", "paused"]),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        return SendMessageResponse(
+            message_id=user_msg.id,
+            decision="task_conflict",
+            payload={
+                "active_task_id": str(active.id),
+                "options": [
+                    {"key": "queue", "label": "排队等候"},
+                    {"key": "cancel_current", "label": "取消当前"},
+                    {"key": "new_group", "label": "新建群做新的"},
+                ],
+            },
+        )
+
     # 配额闸门:Auto 任务创建(v4 #344-347 + 视频日 3 次)
     try:
         await enforce_task_creation(

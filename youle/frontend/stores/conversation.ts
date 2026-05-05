@@ -23,6 +23,10 @@ export interface ConversationSummary {
   avatar_text?: string;
   /** 是否严肃场景(金融/医疗/政务)— 关闭表情 */
   serious_mode?: boolean;
+  /** 用户置顶 */
+  pinned?: boolean;
+  /** 用户静音 */
+  muted?: boolean;
 }
 
 export interface AgentMember {
@@ -91,19 +95,29 @@ export type Message =
   | HitlImageMessage
   | HitlVideoMessage;
 
+export type QuotedRef = { messageId: string; preview: string; role: RoleKey };
+
 interface State {
   list: ConversationSummary[];
   currentId: string | null;
   members: Record<string, AgentMember[]>; // conversation_id → members
   messages: Record<string, Message[]>;     // conversation_id → 历史
+  quoted: Record<string, QuotedRef | null>; // conversation_id → 当前引用
+  starred: string[];                        // 收藏的 message id
   setList: (list: ConversationSummary[]) => void;
   upsertConversation: (c: ConversationSummary) => void;
   setCurrent: (id: string) => void;
   setMembers: (id: string, members: AgentMember[]) => void;
   setMessages: (id: string, messages: Message[]) => void;
   appendMessage: (msg: Message) => void;
+  withdrawMessage: (conversationId: string, messageId: string) => void;
   patchMode: (id: string, mode: WorkMode) => void;
   patchMemberStatus: (id: string, role: RoleKey, status: AgentStatus) => void;
+  togglePin: (id: string) => void;
+  toggleMute: (id: string) => void;
+  remove: (id: string) => void;
+  setQuoted: (conversationId: string, ref: QuotedRef | null) => void;
+  toggleStar: (messageId: string) => void;
 }
 
 export const useConversationStore = create<State>((set) => ({
@@ -111,6 +125,8 @@ export const useConversationStore = create<State>((set) => ({
   currentId: null,
   members: {},
   messages: {},
+  quoted: {},
+  starred: [],
   setList: (list) => set({ list }),
   upsertConversation: (c) =>
     set((s) => {
@@ -150,4 +166,35 @@ export const useConversationStore = create<State>((set) => ({
         },
       };
     }),
+  togglePin: (id) =>
+    set((s) => ({
+      list: s.list.map((c) =>
+        c.id === id && c.kind !== 'main_session' ? { ...c, pinned: !c.pinned } : c,
+      ),
+    })),
+  toggleMute: (id) =>
+    set((s) => ({
+      list: s.list.map((c) =>
+        c.id === id && c.kind !== 'main_session' ? { ...c, muted: !c.muted } : c,
+      ),
+    })),
+  remove: (id) =>
+    set((s) => ({
+      list: s.list.filter((c) => c.id !== id || c.kind === 'main_session'),
+    })),
+  withdrawMessage: (conversationId, messageId) =>
+    set((s) => ({
+      messages: {
+        ...s.messages,
+        [conversationId]: (s.messages[conversationId] ?? []).filter((m) => m.id !== messageId),
+      },
+    })),
+  setQuoted: (conversationId, ref) =>
+    set((s) => ({ quoted: { ...s.quoted, [conversationId]: ref } })),
+  toggleStar: (messageId) =>
+    set((s) => ({
+      starred: s.starred.includes(messageId)
+        ? s.starred.filter((x) => x !== messageId)
+        : [...s.starred, messageId],
+    })),
 }));

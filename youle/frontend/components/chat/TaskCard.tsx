@@ -1,8 +1,21 @@
 'use client';
 
 // Agent 产出的"任务卡片"消息(对齐 frontend_001 视觉)
-import { ArrowRight, FileText, Image as ImageIcon, PenLine, Video } from 'lucide-react';
+// v4 §23 #211-218:卡片操作 [下载] [追问] [改一下]
+import { useState } from 'react';
+import {
+  ArrowRight,
+  Download,
+  FileText,
+  Image as ImageIcon,
+  MessageCircle,
+  PenLine,
+  Wand2,
+  Video,
+} from 'lucide-react';
+import clsx from 'clsx';
 import type { AgentCardMessage } from '@/stores/conversation';
+import { useConversationStore } from '@/stores/conversation';
 
 const ICONS = {
   doc: FileText,
@@ -11,15 +24,45 @@ const ICONS = {
   video: Video,
 };
 
+const REVISE_OPTIONS: { key: string; label: string }[] = [
+  { key: 'style', label: '改风格' },
+  { key: 'content', label: '改内容' },
+  { key: 'length', label: '改长度' },
+];
+
 export function TaskCard({
   card,
   agentColor,
+  conversationId,
+  reference,
+  onAskFollowUp,
+  onRevise,
 }: {
   card: AgentCardMessage['card'];
   agentColor: string;
+  conversationId?: string;
+  reference?: string;
+  onAskFollowUp?: () => void;
+  onRevise?: (key: string) => void;
 }) {
   const Icon = ICONS[card.icon];
   const isDone = card.tag_status === 'done';
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const setQuoted = useConversationStore((s) => s.setQuoted);
+
+  function defaultAskFollowUp() {
+    if (conversationId) {
+      setQuoted(conversationId, {
+        messageId: `card-${card.title}`,
+        preview: card.title,
+        role: 'ceo_assistant',
+      });
+      // 滚动到输入框
+      requestAnimationFrame(() => {
+        document.querySelector('textarea')?.focus();
+      });
+    }
+  }
 
   return (
     <div className="w-[480px] max-w-full overflow-hidden rounded-md border border-wechat-line bg-white shadow-sm">
@@ -76,6 +119,56 @@ export function TaskCard({
           </button>
         )}
       </div>
+
+      {isDone && (
+        <div className="flex divide-x divide-neutral-100 border-t border-neutral-100 bg-neutral-50">
+          {reference && (
+            <a
+              href={reference}
+              target="_blank"
+              rel="noreferrer"
+              className="flex flex-1 items-center justify-center gap-1 py-1.5 text-[11px] text-wechat-fg hover:bg-white"
+            >
+              <Download size={11} /> 下载
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={onAskFollowUp ?? defaultAskFollowUp}
+            className="flex flex-1 items-center justify-center gap-1 py-1.5 text-[11px] text-wechat-fg hover:bg-white"
+          >
+            <MessageCircle size={11} /> 追问
+          </button>
+          <button
+            type="button"
+            onClick={() => setReviseOpen((v) => !v)}
+            className={clsx(
+              'flex flex-1 items-center justify-center gap-1 py-1.5 text-[11px] hover:bg-white',
+              reviseOpen ? 'bg-white text-wechat-green' : 'text-wechat-fg',
+            )}
+          >
+            <Wand2 size={11} /> 改一下
+          </button>
+        </div>
+      )}
+
+      {reviseOpen && (
+        <div className="flex flex-wrap gap-1.5 border-t border-neutral-100 bg-white px-3 py-2">
+          {REVISE_OPTIONS.map((o) => (
+            <button
+              key={o.key}
+              type="button"
+              onClick={() => {
+                onRevise?.(o.key);
+                setReviseOpen(false);
+              }}
+              className="rounded-sm border border-wechat-line bg-white px-2 py-0.5 text-[11px] text-wechat-fg hover:border-wechat-green hover:bg-wechat-green-soft"
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -14,6 +14,7 @@ import clsx from 'clsx';
 import { useConversationStore } from '@/stores/conversation';
 import { useMaterials, usePrompts, useSendMessage } from '@/lib/api';
 import { ROLES } from '@/lib/agents';
+import { X } from 'lucide-react';
 import { EmojiPicker } from '@/components/chat/EmojiPicker';
 import { MentionPopover, type MentionItem } from '@/components/chat/MentionPopover';
 
@@ -28,6 +29,8 @@ export function Composer({ conversationId }: { conversationId: string }) {
   const [mention, setMention] = useState<MentionState | null>(null);
   const conv = useConversationStore((s) => s.list.find((c) => c.id === conversationId));
   const appendMessage = useConversationStore((s) => s.appendMessage);
+  const quoted = useConversationStore((s) => s.quoted[conversationId] ?? null);
+  const setQuoted = useConversationStore((s) => s.setQuoted);
   const send = useSendMessage(conversationId);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -52,16 +55,20 @@ export function Composer({ conversationId }: { conversationId: string }) {
   function dispatch() {
     const trimmed = text.trim();
     if (!trimmed) return;
+    const finalText = quoted
+      ? `> ${ROLES[quoted.role].name}:${quoted.preview}\n${trimmed}`
+      : trimmed;
     appendMessage({
       id: `local-${Date.now()}`,
       conversation_id: conversationId,
       kind: 'user_text',
       role: 'user',
-      text: trimmed,
+      text: finalText,
     });
-    send.mutate(trimmed);
+    send.mutate(finalText);
     setText('');
     setMention(null);
+    setQuoted(conversationId, null);
   }
 
   function applyMention(item: MentionItem) {
@@ -129,6 +136,24 @@ export function Composer({ conversationId }: { conversationId: string }) {
     <div className="relative flex-shrink-0 border-t border-wechat-line bg-white">
       {popover}
 
+      {quoted && (
+        <div className="mx-4 mt-2 flex items-start gap-2 rounded-sm border-l-2 border-wechat-green bg-neutral-50 px-2 py-1.5 text-[11px]">
+          <CornerDownIcon />
+          <div className="flex-1 truncate">
+            <span className="text-wechat-green">{ROLES[quoted.role].name}:</span>
+            <span className="ml-1 text-wechat-sub">{quoted.preview}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setQuoted(conversationId, null)}
+            className="text-wechat-mute hover:text-wechat-fg"
+            aria-label="移除引用"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
+
       <div className="px-4 pb-1.5 pt-2.5">
         <textarea
           ref={taRef}
@@ -191,6 +216,7 @@ export function Composer({ conversationId }: { conversationId: string }) {
         )}
       </div>
 
+      {/* placeholder element for the quoted icon - kept inline above */}
       {showEmoji && !seriousMode && (
         <EmojiPicker
           onClose={() => setShowEmoji(false)}
@@ -201,5 +227,22 @@ export function Composer({ conversationId }: { conversationId: string }) {
         />
       )}
     </div>
+  );
+}
+
+function CornerDownIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      className="mt-0.5 flex-shrink-0 text-wechat-green"
+    >
+      <polyline points="9 10 4 15 9 20" />
+      <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+    </svg>
   );
 }
