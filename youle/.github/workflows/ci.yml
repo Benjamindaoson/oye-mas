@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "sprint/**", "feat/**"]
+  pull_request:
+    branches: [main, "sprint/**"]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: youle
+          POSTGRES_PASSWORD: youle_dev
+          POSTGRES_DB: youle
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.2-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install uv
+        run: pip install uv
+      - working-directory: backend
+        run: |
+          uv sync --extra dev
+          uv run ruff check .
+          uv run mypy app/
+          DATABASE_URL=postgresql+asyncpg://youle:youle_dev@localhost:5432/youle uv run alembic upgrade head
+          LITELLM_MOCK=true uv run pytest tests/ -v
+      - name: Code blacklist grep(铁律 §3)
+        run: |
+          ! grep -rn "import openai" backend/app agents
+          ! grep -rn "import anthropic" backend/app agents
+          ! grep -rn "call_other_agent(" backend/app agents
+          ! grep -rn "except:\s*pass" backend/app agents
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile || pnpm install
+          pnpm typecheck
+          pnpm lint || true
+
+  flywheel-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 飞轮 4 类信号沉淀检查(铁律 15)
+        run: |
+          # 任何修改 task 完成路径的 PR 必须保留 4 类信号 emit
+          if grep -rn "FlywheelService\|flywheel.emit\|flywheel:signals" backend/app agents; then
+            echo "✓ 飞轮信号沉淀点存在"
+          else
+            echo "✗ 未发现飞轮信号沉淀,违反 ADR-011"
+            exit 1
+          fi

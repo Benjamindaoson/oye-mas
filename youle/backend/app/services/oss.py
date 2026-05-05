@@ -1,0 +1,69 @@
+"""OSS 服务(dev: MinIO,prod: 阿里云 OSS)。
+
+铁律:OSS 凭证不下发到客户端;前端只能拿预签名 URL。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import secrets
+from datetime import datetime
+from typing import Any
+
+import boto3
+from botocore.client import Config
+
+from app.config import settings
+
+
+class OSSService:
+    def __init__(self) -> None:
+        self._s3: Any | None = None
+
+    def _client(self) -> Any:
+        if self._s3 is None:
+            self._s3 = boto3.client(
+                "s3",
+                endpoint_url=settings.OSS_ENDPOINT,
+                aws_access_key_id=settings.OSS_ACCESS_KEY,
+                aws_secret_access_key=settings.OSS_SECRET_KEY,
+                region_name=settings.OSS_REGION,
+                config=Config(signature_version="s3v4"),
+                use_ssl=settings.OSS_USE_SSL,
+            )
+        return self._s3
+
+    async def create_presigned_put(
+        self, *, file_name: str, content_type: str, purpose: str
+    ) -> tuple[str, str, int]:
+        ts = datetime.utcnow().strftime("%Y%m%d")
+        token = secrets.token_hex(8)
+        object_key = f"{purpose}/{ts}/{token}_{file_name}"
+        expires_in = 600
+
+        def _generate() -> str:
+            return self._client().generate_presigned_url(  # type: ignore[no-any-return]
+                "put_object",
+                Params={
+                    "Bucket": settings.OSS_BUCKET,
+                    "Key": object_key,
+                    "ContentType": content_type,
+                },
+                ExpiresIn=expires_in,
+            )
+
+        url = await asyncio.to_thread(_generate)
+        return object_key, url, expires_in
+
+    async def get_object_url(self, object_key: str, expires_in: int = 3600) -> str:
+        def _gen() -> str:
+            return self._client().generate_presigned_url(  # type: ignore[no-any-return]
+                "get_object",
+                Params={"Bucket": settings.OSS_BUCKET, "Key": object_key},
+                ExpiresIn=expires_in,
+            )
+
+        return await asyncio.to_thread(_gen)
+
+
+oss_service = OSSService()

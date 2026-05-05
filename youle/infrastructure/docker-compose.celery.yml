@@ -1,0 +1,89 @@
+# 把 celery worker 加进 dev 栈,跟主 docker-compose 一起起
+# 用法: docker compose -f docker-compose.yml -f docker-compose.mock.yml -f docker-compose.celery.yml up -d
+
+name: youle-dev
+
+services:
+  celery-worker-video:
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile.celery
+    image: youle-celery-worker:latest
+    container_name: youle-celery-worker-video
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      REDIS_URL: redis://redis:6379/0
+      OSS_ENDPOINT: http://minio:9000
+      OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-minioadmin}
+      OSS_SECRET_KEY: ${OSS_SECRET_KEY:-minioadmin}
+      OSS_BUCKET: ${OSS_BUCKET:-youle-dev}
+      MCP_AUDIO_TOOLS_URL: http://mcp-audio-tools:7004
+      MCP_VIDEO_TOOLS_URL: http://mcp-video-tools:7003
+    command: ["celery", "-A", "agents.av.celery_tasks.video_workflow", "worker",
+              "--loglevel=info", "--queues=video", "--concurrency=2"]
+
+  # 可选:Flower 监控面板
+  flower:
+    image: mher/flower:2.0
+    container_name: youle-flower
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      FLOWER_PORT: "5555"
+    ports:
+      - "5555:5555"
+    command: ["celery", "--broker=redis://redis:6379/1", "flower",
+              "--port=5555", "--persistent=True"]
+
+  # mcp-video-tools 也需要 ffmpeg/MoviePy(因为它执行真实 compose),所以也用 celery 镜像
+  mcp-video-tools:
+    image: youle-celery-worker:latest
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile.celery
+    container_name: youle-mcp-video-tools
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      OSS_ENDPOINT: http://minio:9000
+      OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-minioadmin}
+      OSS_SECRET_KEY: ${OSS_SECRET_KEY:-minioadmin}
+      OSS_BUCKET: ${OSS_BUCKET:-youle-dev}
+    ports:
+      - "7003:7003"
+    # 用 fastapi 而不是 celery worker
+    command: ["uvicorn", "mcp_servers.video_tools.server:app",
+              "--host", "0.0.0.0", "--port", "7003"]
+
+  mcp-audio-tools:
+    image: youle-celery-worker:latest
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile.celery
+    container_name: youle-mcp-audio-tools
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      OSS_ENDPOINT: http://minio:9000
+      OSS_ACCESS_KEY: ${OSS_ACCESS_KEY:-minioadmin}
+      OSS_SECRET_KEY: ${OSS_SECRET_KEY:-minioadmin}
+      OSS_BUCKET: ${OSS_BUCKET:-youle-dev}
+      LITELLM_URL: http://litellm-mock:4010
+      LITELLM_MOCK: "true"
+    ports:
+      - "7004:7004"
+    command: ["uvicorn", "mcp_servers.audio_tools.server:app",
+              "--host", "0.0.0.0", "--port", "7004"]

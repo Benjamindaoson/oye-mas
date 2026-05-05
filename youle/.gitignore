@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.uv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+dist/
+build/
+.pnpm-store/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Data & artifacts
+*.sqlite
+*.db
+*.log
+logs/
+oss_data/
+qdrant_storage/
+postgres_data/
+redis_data/
+minio_data/
+
+# Generated
+frontend/lib/api-types.ts
+
+# OS
+.DS_Store
+ehthumbs.db
+
+# Docker
+.docker/
