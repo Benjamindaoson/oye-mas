@@ -19,14 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.models.conversation import Conversation
 from app.models.task import Task
+from app.models.user import User
 from app.orchestrator.clarification import generate_clarification
 from app.orchestrator.input_validator import validate_inputs
 from app.orchestrator.intent import understand_intent
 from app.orchestrator.mode_manager import consumes_task_quota, detect_mode_switch
-from app.orchestrator.runner import TaskRunner
+from app.orchestrator.runner_factory import make_runner
 from app.orchestrator.skill_match import match_skill
 from app.schemas.ws import WSEventType
-from app.models.user import User
 from app.services.brief_builder import brief_debouncer, merge_brief_into_skill_inputs
 from app.services.conversation import append_message
 from app.services.flywheel import auto_apply_from_preferences
@@ -284,7 +284,7 @@ async def send_message(
     await session.commit()
     await session.refresh(task)
 
-    runner = TaskRunner(session)
+    runner = make_runner(session)
     dispatched = await runner.start(task.id)
 
     log.info(

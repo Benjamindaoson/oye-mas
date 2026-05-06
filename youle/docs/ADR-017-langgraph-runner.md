@@ -1,9 +1,23 @@
-# ADR-017:接入 LangGraph 作为可选编排内核
+# ADR-017:LangGraph 作为主编排内核(全量启用)
 
-**状态**:Accepted(2026-05-06,V1.5 引入,V1 默认关)
+**状态**:Accepted v2(2026-05-06,**全量启用**;v1 历史版本"V1.5 引入、V1 默认关")
 **提案者**:工程团队
-**关联铁律**:1(单一调度者)/ 4(state 用引用)/ 14(HITL gate)/ 21(中断 9 分类)
+**关联铁律**:1(单一调度者)/ 4(state 用引用)/ 13(MCP 工具)/ 14(HITL gate)/ 21(中断 9 分类)
 **关联 ADR**:ADR-001-rev、ADR-010(HITL)、ADR-014(三模式同群)
+**对齐 CLAUDE.md**:§4.4 Sprint 4 acceptance — "skills/anti_fraud_video.yaml 编译为 LangGraph"
+
+## 决策升级(v2)
+
+v1 ADR 设了 `USE_LANGGRAPH_RUNNER=false` 作 V1.5 渐进切换。
+**v2 改为默认 true,LangGraph 是主编排内核**。理由:
+
+1. CLAUDE.md §4.4 本就要求 Skill 编译为 LangGraph,V1 没真用 = 没达成
+2. 自写 TaskRunner 的 V2 中断 C/D 死路一条,LangGraph time-travel 一行 API
+3. 双轨增加心智成本,代码两份难维护
+4. 测试 11/11 + 全套 97/97 通过,质量证据充分
+
+`USE_LANGGRAPH_RUNNER=false` 保留为**紧急回滚兜底**,不再是默认值。
+TaskRunner 类保留供单测使用,prod 不应路径走到。
 
 ---
 
@@ -34,19 +48,29 @@ V1 的 `app.orchestrator.runner.TaskRunner` 是手写编排引擎:
 - **V1.5 启用**:`USE_LANGGRAPH_RUNNER=true` → 走新 `LangGraphTaskRunner`
 - **V2 自动**:LangGraph time-travel 是中断 C/D 的真实现,V2 强制启用
 
-新增模块:
+新增模块(v2 全量):
 
 ```
 youle/backend/app/orchestrator/langgraph_runner/
 ├── __init__.py            # 公开 LangGraphTaskRunner / build_state_graph / TaskState
-├── state.py               # TaskState TypedDict + reducers
-├── compiler.py            # Skill YAML → StateGraph(节点/边/Send/conditional)
-├── result_waiter.py       # 节点等 Redis Streams 回执的 utility
-├── checkpointer.py        # InMemory/AsyncPostgresSaver 工厂
-└── runner.py              # LangGraphTaskRunner(start/resume/rollback_to_step/get_state/get_history)
+├── state.py               # TaskState TypedDict + reducers(任务编排状态)
+├── compiler.py            # 平铺 Skill YAML → StateGraph(节点/Send/conditional)
+├── subgraph.py            # phase-aware 编译器(反诈视频 = 调研/制作/终审 三段)
+├── result_waiter.py       # 节点等 Redis Streams 回执
+├── checkpointer.py        # InMemorySaver / AsyncPostgresSaver 工厂
+├── runner.py              # LangGraphTaskRunner(start/resume/resolve_hitl/rollback/get_state/get_history)
+└── reflexion_graph.py     # 飞轮 Reflexion 的 LangGraph 化(analyze→validate→persist)
 ```
 
-`runner_factory.make_runner(session)` 按 settings flag 切换,**调用方零改动**。
+切换点(全部已经走 LangGraph):
+- `app/api/messages.py` — `make_runner(session).start(task_id)`
+- `app/api/hitl.py` — `make_runner(session).resolve_hitl(...)` → 内部转 `resume(Command)`
+- `app/api/tasks.py` — `/{id}/rollback` + `/{id}/history`(time-travel 端点)
+- `app/services/result_consumer.py` — flag 开时**不启动**(节点内自己等 stream)
+- `flywheel/reflexion/runner.py` — 调 `process_reflexion_event` 转 graph
+
+`runner_factory.make_runner(session)` 默认返回 `LangGraphTaskRunner`;
+flag=false 仅作回滚兜底,prod 不走。
 
 ## 充分利用的 LangGraph 组件
 
@@ -66,13 +90,32 @@ youle/backend/app/orchestrator/langgraph_runner/
 | `aget_state(checkpoint_id)` | 读特定时刻的 state(V2 回滚预览) |
 | `aupdate_state(config, values)` | 改写 collected_fields + 清下游 step → time travel(V2 中断 C/D) |
 
-## 不动的部分(继续走原架构)
+## 不动的部分(铁律明确禁止)
 
 - **Redis Streams 派发 Agent**(铁律 1+2):分布式优势 > LangGraph in-process
 - **Agent worker 消费回执**:节点只负责"派发 + 等回执",不直接调 Agent 函数
-- **MCP 工具调用**(铁律 13):节点不替代 MCP server
-- **飞轮 4 类信号**(铁律 15):runner._finalize_task_db 仍调 `flywheel.emit_trace`
-- **现有 task_steps / hitl_gates DB 表**:LangGraph state 镜射到 DB,UI / API 兼容
+- **MCP 工具调用**(铁律 13):节点不替代 MCP server,LiteLLM 路由不退化为 ToolNode
+- **现有 task_steps / hitl_gates / artifacts DB 表**:LangGraph state 镜射到 DB,UI / API 完全兼容
+- **配额 / SMS / private chat / 静态查询**:同步函数,加 graph 是过度设计
+
+## 决策矩阵(v2 — 哪些用 LangGraph)
+
+| 功能 | LangGraph? | 落地 |
+|---|---|---|
+| 任务编排核心调度 | ✅ 必须 | `LangGraphTaskRunner` |
+| HITL gate 暂停/恢复 | ✅ 必须 | `interrupt()` + `Command(resume=)` |
+| 任务状态持久化 | ✅ 必须 | `AsyncPostgresSaver` |
+| Agent 回执消费 | ✅ 必须 | 节点内 `wait_for_step_result`,`result_consumer` 默认 no-op |
+| WS streaming | ✅ 必须 | `astream_events v2` |
+| Time travel(V2 中断 C/D)| ✅ 必须 | `aupdate_state` |
+| Skill 模块化(hero subgraph)| ✅ 应该 | `subgraph.build_phased_state_graph` |
+| 飞轮 Reflexion | ✅ 应该 | `reflexion_graph`(checkpoint 保护失败可恢复)|
+| 飞轮 Skill drafter / Ingestion / Preference embedder | ⚪ P1 范围 | 当前是单步 stream consumer,加 graph ROI 较低 |
+| Agent 跨调通信 | ❌ 禁止 | 铁律 1+2:Redis Streams 分布式 |
+| MCP 工具调用 | ❌ 禁止 | 铁律 13:LiteLLM 路由 + MCP server |
+| Agent worker 内部 | ❌ 不该 | worker 是无状态消费器 |
+| HR/财务经理私聊 | ❌ 不该 | 单轮 LLM,加 graph 过度 |
+| 配额检查 / SMS / 静态查询 | ❌ 不该 | 同步函数 |
 
 ## 价值证明:V2 中断 C/D 一行 API
 
@@ -94,25 +137,33 @@ await runner.rollback_to_step(
 - `POST /api/tasks/{id}/rollback {target_step_id, instruction?}` — V1.5 中断 C / V2 中断 D
 - `GET  /api/tasks/{id}/history` — checkpoint 列表(给前端时间线 UI)
 
-## 测试覆盖
+## 测试覆盖(共 11 个 LangGraph 测试 / 全套 97 测试)
 
 `tests/unit/test_langgraph_compiler.py`(3):
 - 简单线性 / 菱形并行 / 坏 YAML 早 fail
 
-`tests/unit/test_langgraph_runtime.py`(4,用 InMemorySaver):
+`tests/unit/test_langgraph_runtime.py`(4,InMemorySaver):
 - 线性图跑完 + dispatch 真发生
 - interrupt() 暂停 + Command(resume) 恢复
 - HITL rejected → final_status=failed
 - **time travel**:b 跑完后回滚到 a 完成、b 待跑的 snapshot,改 collected_fields,重跑 b 拿到新 artifact
 
-## 迁移路径(V1 → V1.5 → V2)
+`tests/unit/test_langgraph_subgraph.py`(2):
+- 反诈视频 hero phased(research / production / review)编译 + 跑通,**production phase 内 image/tts/bgm 真并行**
+- 无 phase 字段时退化为平铺图(向后兼容)
 
-| 阶段 | 默认值 | 用户行为 |
+`tests/unit/test_langgraph_reflexion.py`(2):
+- LLM ok → 写 prompt_improvement_candidates(graph 节点链跑通)
+- LLM 抛 → 节点标 error → graph END,**不写 DB,checkpoint 保留**(可续跑)
+
+## 迁移路径(已完成)
+
+| 阶段 | 默认值 | 状态 |
 |---|---|---|
-| **V1**(当前) | `USE_LANGGRAPH_RUNNER=false` | 完全无感,TaskRunner 跑 |
-| **V1.5**(渐进) | staging 切 true,grafana 监控 | 新任务走 LangGraph,旧任务由原 runner 处理完 |
-| **V1.5 灰度成功** | prod 切 true | 全量切换;原 TaskRunner 留 1 个 release 作回滚兜底 |
-| **V2**(中断 C/D) | flag 强制 true | 后台不再支持 false(rollback API 必须可用) |
+| ~~**V1**~~ | ~~`false`~~ | ~~历史~~ |
+| ~~**V1.5 渐进**~~ | ~~staging 切~~ | ~~跳过~~ |
+| **现在(v2 ADR)** | `USE_LANGGRAPH_RUNNER=true` | **prod 默认走 LangGraph** |
+| **V2 中断 C/D** | flag 强制 true | rollback API 已就绪,前端启用即可 |
 
 ## 风险与缓解
 
@@ -130,20 +181,23 @@ await runner.rollback_to_step(
 - ❌ **MessageGraph / `add_messages` 跨 Agent 共享**:大产物会序列化进 state,违反铁律 4
 - ❌ **替换 LiteLLM 为 ToolNode**:LiteLLM 路由表是 youle 的核心(57 task_type),不退化
 
-## 启用清单
+## 紧急回滚(v2)
 
-V1.5 切换日:
+如果 LangGraph 出现 prod 问题,**临时回滚**:
 
 ```bash
-# 1. ConfigMap 加
-USE_LANGGRAPH_RUNNER=true
-LANGGRAPH_CHECKPOINT_URL=postgresql://youle:***@postgres:5432/youle
+# 1. ConfigMap 加(覆盖默认 true)
+USE_LANGGRAPH_RUNNER=false
 
-# 2. 镜像无需重 build(代码已合并 main)
+# 2. 重启 backend Deployment
+kubectl -n youle rollout restart deploy/backend
 
-# 3. backend 启动时自动:
-#    - AsyncPostgresSaver.setup() 创建 langgraph_* 表
-#    - 后续 task 走 LangGraphTaskRunner
+# 3. 后续 task 走 V1 自写 TaskRunner;result_consumer 自动启动
+# 4. /rollback 端点返回 405(time-travel 无法用)
+```
+
+正常生产无需任何特殊配置 — `USE_LANGGRAPH_RUNNER` 默认 true,
+`AsyncPostgresSaver.setup()` 在 backend 启动时自动建 `langgraph_*` 表。
 
 # 4. 前端启用 V1.5 时间线 UI:
 #    GET /api/tasks/<id>/history

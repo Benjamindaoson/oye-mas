@@ -1,8 +1,8 @@
-"""Agent 回执消费 reaper(后台任务)。
+"""Agent 回执消费 reaper — LangGraph-aware。
 
-监听 Redis Streams `agent_results:*`,把回执喂给 TaskRunner.handle_result。
-启动:由 main.py lifespan 注册为 asyncio.Task。
-关停:set self._stop=True,wait task。
+LangGraph 模式(默认):节点内 `wait_for_step_result` 自己读 stream,**本 reaper 不启动**。
+TaskRunner 模式(legacy 兜底):后台 asyncio.Task 扫 `agent_results:*`,
+喂给 TaskRunner.handle_result。
 
 设计:
 - 用 KEYS 扫一次活跃 stream(简单粗暴,V1 够用;V2 改用 keyspace notifications 或一个统一的 stream)
@@ -13,14 +13,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import contextlib
 from typing import Any
 
 import structlog
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.config import settings
 from app.db import SessionLocal
-from app.orchestrator.runner import TaskRunner
 from app.redis_client import get_redis
 from app.schemas.agent import AgentResult
 
@@ -37,6 +37,10 @@ class ResultConsumer:
     def start(self) -> None:
         if self._task is not None:
             return
+        if settings.USE_LANGGRAPH_RUNNER:
+            # LangGraph 节点内自己等回执 — 不启动外部 reaper
+            log.info("result_consumer.skipped", reason="langgraph_runner_active")
+            return
         self._task = asyncio.create_task(self._loop())
         log.info("result_consumer.started")
 
@@ -44,10 +48,8 @@ class ResultConsumer:
         self._stop = True
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
             self._task = None
             log.info("result_consumer.stopped")
 
@@ -81,6 +83,9 @@ class ResultConsumer:
         except Exception as e:
             log.warning("result_consumer.parse_failed", err=str(e), data=str(fields)[:200])
             return
+
+        # legacy TaskRunner 路径(LangGraph 模式不会跑到这里)
+        from app.orchestrator.runner import TaskRunner  # 延迟 import,避免 LangGraph 模式下浪费
 
         async with self._session_factory() as session:
             runner = TaskRunner(session)

@@ -234,6 +234,42 @@ class LangGraphTaskRunner:
         )
         return {"state": final_state, "config": config}
 
+    # ── 兼容老 API:resolve_hitl(gate_id, resolution, user_choice) → 内部转 resume ──
+    async def resolve_hitl(
+        self,
+        gate_id: UUID,
+        *,
+        resolution: str,
+        user_choice: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """V1 hitl.py 调用入口。把 gate_id → task_id,组装 decision payload 转给 resume。
+
+        decision 语义:
+        - resolution="approved"   → graph 继续跑下游
+        - resolution="modified"   → graph 走 modify(V1.5 用 rollback_to_step 实现)
+        - resolution="cancelled"  → 标 final_status=failed
+        - resolution="rejected"   → 同 cancelled
+        """
+        gate = await self.session.get(HITLGate, gate_id)
+        if gate is None:
+            raise ValueError(f"hitl gate {gate_id} not found")
+        # 关 gate(UI 兼容)
+        gate.resolution = resolution
+        gate.user_choice = user_choice or {}
+        gate.closed_at = datetime.now(UTC)
+        await self.session.commit()
+        # LangGraph resume:resolution=approved 继续;cancelled/rejected 终止;modified 暂作 approved + 标记
+        if resolution in ("cancelled", "rejected"):
+            decision = {"resolution": "rejected", "feedback": (user_choice or {}).get("reason", "user_cancelled")}
+        elif resolution == "modified":
+            # V1.5 真实现:这里应当调 rollback_to_step;V1 暂作 approved 处理
+            decision = {"resolution": "approved", "modify_request": user_choice or {}}
+        else:
+            decision = {"resolution": "approved", "user_choice": user_choice or {}}
+        out = await self.resume(gate.task_id, decision=decision)
+        # 返回新派发的 step_id 列表(API 契约兼容)— 简化:从最终 state 提 next
+        return list((out.get("state") or {}).get("step_results", {}).keys())
+
     # ── 时间旅行:V2 中断 C/D — 回滚到 step N 重做 ──
     async def rollback_to_step(
         self,
