@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # ── 监控 ──
     SENTRY_DSN: str = ""
 
+    # ── LangGraph 接入(铁律 1 调度内核换装,默认关 = V1 走 TaskRunner;V1.5 切此 flag)──
+    USE_LANGGRAPH_RUNNER: bool = False
+    LANGGRAPH_CHECKPOINT_INMEMORY: bool = False
+    LANGGRAPH_CHECKPOINT_URL: str = ""  # 留空 = 复用 DATABASE_URL
+    LANGGRAPH_PG_POOL_MAX: int = 10
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

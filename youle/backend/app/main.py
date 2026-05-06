@@ -57,12 +57,35 @@ if _SENTRY_DSN:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    log.info("youle.startup", env=settings.ENV, mock=settings.LITELLM_MOCK)
+    log.info(
+        "youle.startup",
+        env=settings.ENV,
+        mock=settings.LITELLM_MOCK,
+        langgraph=settings.USE_LANGGRAPH_RUNNER,
+    )
+    # LangGraph checkpointer(若启用)
+    if settings.USE_LANGGRAPH_RUNNER:
+        from app.orchestrator.langgraph_runner.checkpointer import (
+            init_postgres_checkpointer,
+        )
+        from app.orchestrator.langgraph_runner.runner import init_checkpointer
+
+        saver = await init_postgres_checkpointer(
+            settings.LANGGRAPH_CHECKPOINT_URL or settings.DATABASE_URL
+        )
+        init_checkpointer(saver)
     # 启动后台 reaper:消费 Agent 回执 → driving TaskRunner.handle_result
+    # (LangGraph 模式下 result_consumer 仍跑 — 兼容 TaskRunner 路径或灰度回滚)
     result_consumer.start()
     yield
     log.info("youle.shutdown")
     await result_consumer.stop()
+    if settings.USE_LANGGRAPH_RUNNER:
+        from app.orchestrator.langgraph_runner.checkpointer import (
+            close_postgres_checkpointer,
+        )
+
+        await close_postgres_checkpointer()
     await close_llm()
     await close_mcp_client()
     await close_redis()
