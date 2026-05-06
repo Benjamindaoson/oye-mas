@@ -25,13 +25,15 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.artifact import Artifact
-from app.models.conversation import Conversation
 from app.models.hitl_gate import HITLGate
 from app.models.skill import Skill
 from app.models.task import Task, TaskStep
+from app.orchestrator.task_compiler import DAGCompileError, compile_to_dag
 from app.schemas.agent import AgentResult, AgentTask, ArtifactRef
 from app.schemas.ws import WSEventType
+from app.services.agent_status import set_status as set_agent_status
 from app.services.dispatcher import dispatch_task as default_dispatch
+from app.services.flywheel import flywheel
 from app.services.skill_loader import load_skill_by_id
 from app.ws.manager import ws_manager
 
@@ -70,6 +72,13 @@ class TaskRunner:
         if task is None:
             raise ValueError(f"task {task_id} not found")
         skill_yaml = await self._load_skill_yaml(task)
+
+        # 启动前静态校验 DAG(环 / 缺失 dep / 重复 step_id 等 → 立即失败)
+        try:
+            compile_to_dag(skill_yaml)
+        except DAGCompileError as e:
+            await self._fail_task(task, reason={"phase": "compile", "error": str(e)})
+            raise
 
         # 持久化所有 step(pending),便于 UI 一次性看到全貌
         existing_rows = await self.session.execute(
@@ -151,6 +160,25 @@ class TaskRunner:
                 ),
             },
         )
+
+        # Agent 完成本步 → 切回 idle(铁律 19 拟人化:UI 实时反馈)
+        try:
+            row = (
+                await self.session.execute(
+                    select(TaskStep).where(
+                        TaskStep.task_id == result.task_id, TaskStep.step_id == result.step_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if row and row.agent_id:
+                await set_agent_status(
+                    self.session,
+                    user_id=task.user_id,
+                    agent_id=row.agent_id,
+                    status="idle",
+                )
+        except Exception as e:
+            log.warning("runner.set_status_idle_failed", err=str(e))
 
         if result.status == "failed":
             await self._fail_task(task, reason=result.error_detail or {"step": result.step_id})
@@ -288,6 +316,16 @@ class TaskRunner:
                 .where(TaskStep.task_id == task_id, TaskStep.step_id == sid)
                 .values(status="running", started_at=datetime.now(UTC))
             )
+            # 快路径:Agent 进入 working 状态 + WS 推送(铁律 19 拟人化)
+            try:
+                await set_agent_status(
+                    self.session,
+                    user_id=task.user_id,
+                    agent_id=step_def["agent"],
+                    status="working",
+                )
+            except Exception as e:
+                log.warning("runner.set_status_failed", err=str(e))
             await self.publish(
                 str(task.user_id),
                 {
@@ -335,6 +373,25 @@ class TaskRunner:
             if ts and ts.output_artifact_id:
                 primary_artifact_id = ts.output_artifact_id
         await self.session.commit()
+        # 飞轮信号 1:工作流轨迹(成功) — Reflexion 不会触发(failure_reason 为空)
+        try:
+            duration_ms = (
+                int((task.completed_at - task.started_at).total_seconds() * 1000)
+                if task.started_at
+                else None
+            )
+            await flywheel.emit_trace(
+                self.session,
+                task_id=task.id,
+                user_id=task.user_id,
+                skill_id=task.skill_id,
+                skill_version=task.skill_version,
+                duration_ms=duration_ms,
+                cost_usd=None,  # 累计 cost 由 ingestion runner 汇总(不阻塞主流程)
+                full_trace=await self._collect_trace_summary(task.id),
+            )
+        except Exception as e:
+            log.warning("runner.flywheel_emit_failed", task_id=str(task_id), err=str(e))
         await self.publish(
             str(task.user_id),
             {
@@ -347,11 +404,50 @@ class TaskRunner:
         )
         log.info("runner.task_completed", task_id=str(task_id))
 
+    async def _collect_trace_summary(self, task_id: UUID) -> dict[str, Any]:
+        """采集任务 step 摘要,作为 trace_excerpt(供 Reflexion / Skill 草稿)。"""
+        rows = await self.session.execute(
+            select(TaskStep).where(TaskStep.task_id == task_id)
+        )
+        return {
+            "steps": [
+                {
+                    "step_id": r.step_id,
+                    "agent_id": r.agent_id,
+                    "task_type": r.task_type,
+                    "status": r.status,
+                    "duration_ms": r.duration_ms,
+                    "error": r.error_detail,
+                }
+                for r in rows.scalars().all()
+            ]
+        }
+
     async def _fail_task(self, task: Task, *, reason: dict[str, Any]) -> None:
         task.status = "failed"
         task.completed_at = datetime.now(UTC)
         task.error_detail = reason
         await self.session.commit()
+        # 飞轮信号 1+3:失败 trace 触发 Reflexion(由 emit_trace 在 failure_reason 非空时自动 emit)
+        try:
+            duration_ms = (
+                int((task.completed_at - task.started_at).total_seconds() * 1000)
+                if task.started_at
+                else None
+            )
+            await flywheel.emit_trace(
+                self.session,
+                task_id=task.id,
+                user_id=task.user_id,
+                skill_id=task.skill_id,
+                skill_version=task.skill_version,
+                duration_ms=duration_ms,
+                cost_usd=None,
+                failure_reason=str(reason)[:500],
+                full_trace=await self._collect_trace_summary(task.id),
+            )
+        except Exception as e:
+            log.warning("runner.flywheel_emit_failed", task_id=str(task.id), err=str(e))
         await self.publish(
             str(task.user_id),
             {
@@ -513,8 +609,8 @@ class TaskRunner:
             skill_yaml = await self._load_skill_yaml(task)
             primary = (skill_yaml.get("delivery") or {}).get("primary_artifact")
             is_final = primary == result.step_id
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("runner.is_final_check_failed", task_id=str(task.id), err=str(e))
 
         artifact = Artifact(
             id=output.artifact_id,

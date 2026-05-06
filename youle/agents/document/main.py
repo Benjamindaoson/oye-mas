@@ -5,6 +5,13 @@ from __future__ import annotations
 import asyncio
 
 from agents._common.consumer import AgentConsumer
+from agents.document.handlers.extras import (
+    docx_assemble_handler,
+    pdf_extract_handler,
+    pdf_ocr_handler,
+    pptx_assemble_handler,
+    xlsx_assemble_handler,
+)
 from agents.document.handlers.image_concat_long import image_concat_long_handler
 
 
@@ -13,7 +20,12 @@ async def main() -> None:
         agent_id="agent_2",
         handlers={
             "image_concat_long": image_concat_long_handler,
-            # TODO(agent2-handlers): pptx_assemble / xlsx_assemble / docx_assemble / pdf_extract / pdf_ocr
+            # V1.5 扩展(handlers/extras.py)— 走 mcp-document-tools(铁律 13)
+            "pptx_assemble": pptx_assemble_handler,
+            "xlsx_assemble": xlsx_assemble_handler,
+            "docx_assemble": docx_assemble_handler,
+            "pdf_extract": pdf_extract_handler,
+            "pdf_ocr": pdf_ocr_handler,
         },
     )
     await consumer.start()

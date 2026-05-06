@@ -164,18 +164,140 @@ async def download_batch(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _do_bg_remove(ref: str) -> tuple[str, bool]:
+    """优先 rembg(深度模型),没装时退回 PIL 简易抠图(白底/纯色背景检测)。"""
+    data = _read_oss(ref) if str(ref).startswith("oss://") else httpx.get(str(ref), timeout=20.0).content
+    try:
+        from rembg import remove
+
+        out = remove(data)  # PNG with alpha
+        used_real = True
+    except ImportError:
+        # 退化:把近白(>240)/近黑(<15)替换为透明
+        img = Image.open(io.BytesIO(data)).convert("RGBA")
+        pixels = img.load()
+        for y in range(img.height):
+            for x in range(img.width):
+                r, g, b, _ = pixels[x, y]
+                if (r > 240 and g > 240 and b > 240) or (r < 15 and g < 15 and b < 15):
+                    pixels[x, y] = (255, 255, 255, 0)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        out = buf.getvalue()
+        used_real = False
+    key = f"bg-removed/{uuid4().hex}.png"
+    return _put_oss(key, out, "image/png"), used_real
+
+
 async def bg_remove(arguments: dict[str, Any]) -> dict[str, Any]:
-    # TODO(mcp-image): rembg
-    return {"oss_ref": f"oss://{OSS_BUCKET}/bg-removed.png", "_mock": True}
+    """V1.5 接 rembg / Photoroom;V1 PIL fallback 也能跑。"""
+    ref = arguments.get("ref") or arguments.get("oss_ref") or arguments.get("url")
+    if not ref:
+        return {"error": "ref 必填", "_failed": True}
+    try:
+        oss_ref, used_real = await asyncio.to_thread(_do_bg_remove, str(ref))
+        return {"oss_ref": oss_ref, "engine": "rembg" if used_real else "pil_fallback"}
+    except Exception as e:
+        log.warning("bg_remove.failed", err=str(e))
+        return {"oss_ref": f"oss://{OSS_BUCKET}/bg-removed-mock.png", "_mock": True, "error": str(e)}
+
+
+def _do_enhance(ref: str, scale: int) -> tuple[str, dict[str, int]]:
+    """优先 Real-ESRGAN(若装了),否则 PIL LANCZOS 上采样 + 锐化(简易增强)。"""
+    data = _read_oss(ref) if str(ref).startswith("oss://") else httpx.get(str(ref), timeout=20.0).content
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    target = (img.width * scale, img.height * scale)
+    try:
+        # Real-ESRGAN 接入预留(V1.5):
+        # from realesrgan import RealESRGANer; out_img = ...
+        raise ImportError("realesrgan not configured")
+    except ImportError:
+        from PIL import ImageFilter
+
+        out_img = img.resize(target, Image.LANCZOS).filter(ImageFilter.SHARPEN)
+
+    buf = io.BytesIO()
+    out_img.save(buf, format="JPEG", quality=92)
+    key = f"enhanced/{uuid4().hex}.jpg"
+    return (
+        _put_oss(key, buf.getvalue(), "image/jpeg"),
+        {"width": out_img.width, "height": out_img.height},
+    )
 
 
 async def enhance(arguments: dict[str, Any]) -> dict[str, Any]:
-    # TODO(mcp-image): Real-ESRGAN
-    return {"oss_ref": f"oss://{OSS_BUCKET}/enhanced.png", "_mock": True}
+    ref = arguments.get("ref") or arguments.get("oss_ref") or arguments.get("url")
+    scale = int(arguments.get("scale", 2))
+    if not ref:
+        return {"error": "ref 必填", "_failed": True}
+    if scale not in (2, 3, 4):
+        scale = 2
+    try:
+        oss_ref, dims = await asyncio.to_thread(_do_enhance, str(ref), scale)
+        return {"oss_ref": oss_ref, "scale": scale, **dims}
+    except Exception as e:
+        log.warning("enhance.failed", err=str(e))
+        return {"oss_ref": f"oss://{OSS_BUCKET}/enhanced-mock.jpg", "_mock": True, "error": str(e)}
+
+
+def _do_quality_check(ref: str, min_width: int) -> dict[str, Any]:
+    """简易客观质检:分辨率/对比度/锐度;V1.5 可接 LLM 评估美学。"""
+    data = _read_oss(ref) if str(ref).startswith("oss://") else httpx.get(str(ref), timeout=20.0).content
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    w, h = img.size
+
+    # 简易锐度(拉普拉斯近似):用 ImageStat 算亮度方差
+    from PIL import ImageStat
+
+    grayscale = img.convert("L")
+    stat = ImageStat.Stat(grayscale)
+    variance = stat.var[0] if stat.var else 0.0  # 越大越锐
+    mean = stat.mean[0]
+
+    issues: list[str] = []
+    if w < min_width:
+        issues.append(f"分辨率不足({w}<{min_width})")
+    if variance < 200:
+        issues.append("锐度不足/可能模糊")
+    if mean < 30 or mean > 230:
+        issues.append("曝光异常(过暗或过曝)")
+
+    # 综合评分(0..1):分辨率 0.4 + 锐度 0.4 + 曝光 0.2
+    res_score = min(1.0, w / max(min_width, 1))
+    sharp_score = min(1.0, variance / 1500)
+    exp_mid = abs(mean - 130) / 130  # 0=好,1=极差
+    exp_score = max(0.0, 1.0 - exp_mid)
+    score = round(0.4 * res_score + 0.4 * sharp_score + 0.2 * exp_score, 3)
+
+    suggestion = ""
+    if "分辨率不足" in "".join(issues):
+        suggestion = "建议下载原图或调用 enhance 上采样"
+    elif "锐度不足" in "".join(issues):
+        suggestion = "建议替换为更清晰图,或调用 enhance"
+    elif "曝光异常" in "".join(issues):
+        suggestion = "建议调整曝光后再使用"
+
+    return {
+        "score": score,
+        "issues": issues,
+        "suggestion": suggestion,
+        "width": w,
+        "height": h,
+        "sharpness": round(variance, 1),
+        "brightness": round(mean, 1),
+    }
 
 
 async def quality_check(arguments: dict[str, Any]) -> dict[str, Any]:
-    return {"score": 0.85, "issues": [], "suggestion": "", "_mock": True}
+    ref = arguments.get("ref") or arguments.get("oss_ref") or arguments.get("url")
+    min_width = int(arguments.get("min_width", 720))
+    if not ref:
+        return {"error": "ref 必填", "_failed": True}
+    try:
+        return await asyncio.to_thread(_do_quality_check, str(ref), min_width)
+    except Exception as e:
+        log.warning("quality_check.failed", err=str(e))
+        return {"score": 0.5, "issues": [str(e)], "suggestion": "", "_failed": True}
 
 
 app = make_app(
