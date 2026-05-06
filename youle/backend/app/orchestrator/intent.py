@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Literal
 
 import structlog
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.config.prompts import ORCHESTRATOR_INTENT_PROMPT
 from app.router import complete
+from app.services.metrics import record_intent_latency
 
 log = structlog.get_logger(__name__)
 
@@ -58,12 +60,14 @@ async def understand_intent(
             ),
         },
     ]
+    t0 = time.monotonic()
     resp = await complete(
         task_type="intent_understanding",
         messages=messages,
         response_format={"type": "json_object"},
         temperature=0.1,
     )
+    record_intent_latency(time.monotonic() - t0)
     try:
         data = json.loads(resp.content)
     except json.JSONDecodeError:

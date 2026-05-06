@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -98,10 +99,8 @@ def _push_agent_result(*, task_id: str, payload: dict[str, Any]) -> None:
     try:
         r.xadd(f"agent_results:{task_id}", {"data": json.dumps(payload, ensure_ascii=False)})
     finally:
-        try:
+        with contextlib.suppress(Exception):
             r.close()
-        except Exception:
-            pass
 
 
 @celery_app.task(name="video_compose_workflow", bind=True, time_limit=900)

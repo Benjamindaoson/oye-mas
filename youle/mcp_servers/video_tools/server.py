@@ -15,6 +15,7 @@ compose 的输入约定:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import os
 import tempfile
@@ -180,10 +181,8 @@ def _do_compose(
         oss_ref = _put_oss(oss_key, data, "video/mp4")
 
         # 释放
-        try:
+        with contextlib.suppress(Exception):
             video.close()
-        except Exception:
-            pass
 
     return oss_ref, duration, size_bytes
 

@@ -14,10 +14,12 @@ from agents.av.handlers.audio_to_text import audio_to_text_handler
 @pytest.fixture
 def fake_task() -> AgentTask:
     return AgentTask(
-        task_id=str(uuid4()),
+        task_id=uuid4(),
         step_id="step_audio",
         agent_id="agent_4",
         task_type="audio_to_text",
+        user_id=uuid4(),
+        conversation_id=uuid4(),
         inputs={"audio_url": "oss://youle-dev/clips/sample.mp3"},
         parameters={"language": "zh"},
         routing_hints={},
@@ -26,10 +28,12 @@ def fake_task() -> AgentTask:
 
 def test_handler_missing_audio_returns_failed() -> None:
     bad = AgentTask(
-        task_id=str(uuid4()),
+        task_id=uuid4(),
         step_id="x",
         agent_id="agent_4",
         task_type="audio_to_text",
+        user_id=uuid4(),
+        conversation_id=uuid4(),
         inputs={},
         parameters={},
         routing_hints={},

@@ -609,8 +609,8 @@ class TaskRunner:
             skill_yaml = await self._load_skill_yaml(task)
             primary = (skill_yaml.get("delivery") or {}).get("primary_artifact")
             is_final = primary == result.step_id
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("runner.is_final_check_failed", task_id=str(task.id), err=str(e))
 
         artifact = Artifact(
             id=output.artifact_id,
