@@ -176,6 +176,7 @@ class TaskRunner:
                     user_id=task.user_id,
                     agent_id=row.agent_id,
                     status="idle",
+                    conversation_id=task.conversation_id,
                 )
         except Exception as e:
             log.warning("runner.set_status_idle_failed", err=str(e))
@@ -323,6 +324,7 @@ class TaskRunner:
                     user_id=task.user_id,
                     agent_id=step_def["agent"],
                     status="working",
+                    conversation_id=task.conversation_id,
                 )
             except Exception as e:
                 log.warning("runner.set_status_failed", err=str(e))
