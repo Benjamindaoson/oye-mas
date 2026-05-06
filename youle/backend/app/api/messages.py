@@ -51,12 +51,55 @@ log = structlog.get_logger(__name__)
 class SendMessageRequest(BaseModel):
     content: str
     role: str = "user"
+    # 用户在群内 @ 某个 Agent 的 id 列表(铁律 1:用户→Agent 允许;Agent→Agent 禁止)
+    # 例:["agent_3"](让设计师单独响应,不走完整 Skill)
+    mentions: list[str] = []
 
 
 class SendMessageResponse(BaseModel):
     message_id: UUID
-    decision: str  # task_started / clarification_required / chitchat / mode_switched
+    decision: str  # task_started / clarification_required / chitchat / mode_switched / mention_replied
     payload: dict[str, Any]
+
+
+# 群内 @ Agent 路由的合法目标:
+#   主会话 + 普通群 都允许 @ 4 个分任务 Agent + 总裁助理
+#   主会话还允许 @ HR / 财务经理(铁律 18)
+_MENTION_TARGETS_GROUP = {"ceo_assistant", "agent_1", "agent_2", "agent_3", "agent_4"}
+_MENTION_TARGETS_MAIN = _MENTION_TARGETS_GROUP | {"hr", "finance_manager"}
+
+
+# 显示名 ↔ agent_id 映射(@设计师 / @研究员 等)
+_DISPLAY_TO_ID: dict[str, str] = {
+    "总裁助理": "ceo_assistant",
+    "研究员": "agent_1",
+    "文档专员": "agent_2",
+    "设计师": "agent_3",
+    "影音师": "agent_4",
+    "HR": "hr",
+    "财务经理": "finance_manager",
+}
+
+
+def _parse_mentions(content: str, hint: list[str]) -> list[str]:
+    """优先信任前端 hint(Composer 已在 popover 选定具体 id);
+    没 hint 时从文本里提"@ 显示名"作 fallback。
+    """
+    if hint:
+        # 去重保序 + 仅保留有效 id
+        seen: set[str] = set()
+        out: list[str] = []
+        for m in hint:
+            if m in _MENTION_TARGETS_MAIN and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+    # text fallback:简单扫 "@<name>"
+    out2: list[str] = []
+    for display, aid in _DISPLAY_TO_ID.items():
+        if f"@{display}" in content and aid not in out2:
+            out2.append(aid)
+    return out2
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=SendMessageResponse)
@@ -79,8 +122,14 @@ async def send_message(
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, e.detail) from e
 
+    # 解析 @ mention(用户在群内 @ 某 Agent — 铁律 1:用户→Agent 允许)
+    parsed_mentions = _parse_mentions(body.content, body.mentions or [])
     user_msg = await append_message(
-        session, conversation_id=conv.id, role=body.role, content=body.content
+        session,
+        conversation_id=conv.id,
+        role=body.role,
+        content=body.content,
+        extra_metadata={"mentions": parsed_mentions} if parsed_mentions else None,
     )
 
     # Plan 模式下推 Brief 防抖更新器(v4 #143)
@@ -88,6 +137,41 @@ async def send_message(
         await brief_debouncer.push(
             conv.id, {"role": body.role, "content": body.content}
         )
+
+    # ─── 群内 @ Agent 短路径 ───
+    # 用户在群内 @ 单个 Agent → 该 Agent 直接回(走 private_chat_respond,但不切换 conv mode)
+    # 不走完整 Skill 编排(那是新发任务时的路径)
+    # 注意:多个 mention 不接 — 只接 1 个;@ 总裁助理 走原路径(它本来就负责调度)
+    if (
+        len(parsed_mentions) == 1
+        and parsed_mentions[0] != "ceo_assistant"
+        and conv.mode in ("main_session", "group")
+    ):
+        target = parsed_mentions[0]
+        allowed = _MENTION_TARGETS_MAIN if conv.mode == "main_session" else _MENTION_TARGETS_GROUP
+        if target in allowed:
+            from app.services.private_chat import private_chat_respond
+
+            reply = await private_chat_respond(
+                session,
+                conversation_id=conv.id,
+                agent_id=target,
+                user_message=body.content,
+            )
+            log.info(
+                "messages.mention_replied",
+                conv_id=str(conv.id),
+                mode=conv.mode,
+                target=target,
+            )
+            return SendMessageResponse(
+                message_id=user_msg.id,
+                decision="mention_replied",
+                payload={
+                    "target": target,
+                    "reply_message_id": str(reply.id),
+                },
+            )
 
     # 中断 I:模式切换检测
     if conv.mode == "group" and conv.work_mode is not None:

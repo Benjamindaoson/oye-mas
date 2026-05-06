@@ -58,7 +58,7 @@ async def list_skills(
             )
         )
     ).scalars().all()
-    sub_set = {sk for sk in sub_rows}
+    sub_set = set(sub_rows)
 
     return [
         {
@@ -111,6 +111,68 @@ async def my_skills(
         }
         for s in rows
     ]
+
+
+class SkillDetail(SkillCard):
+    """Skill 详情页(浏览市场某条 Skill 时展示)。"""
+
+    yaml_definition: dict[str, Any] | None = None
+    inputs_schema: list[dict[str, Any]] = []
+    workflow_summary: list[dict[str, Any]] = []  # [{step_id, agent, task_type}]
+    delivery: dict[str, Any] | None = None
+    anti_signals: list[str] = []
+
+
+@router.get("/skills/{skill_id}", response_model=SkillDetail)
+async def skill_detail(
+    skill_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """单个 Skill 详情(给 /market/[skill_id] 详情页用)。"""
+    skill = await session.get(Skill, skill_id)
+    if skill is None or skill.status != "published":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Skill 不存在或未发布")
+
+    # 检查订阅状态
+    sub = (
+        await session.execute(
+            select(UserSkillVisibility).where(
+                UserSkillVisibility.user_id == user_id,
+                UserSkillVisibility.skill_id == skill_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    yml: dict[str, Any] = skill.yaml_definition or {}
+    return {
+        "id": skill.id,
+        "skill_id": skill.skill_id,
+        "name": skill.name,
+        "description": skill.description,
+        "domain": skill.domain,
+        "scenario": skill.scenario,
+        "version": skill.version,
+        "creator_type": skill.creator_type,
+        "visibility": skill.visibility,
+        "keywords": list(skill.keywords or []),
+        "subscribed": sub is not None
+        or (skill.creator_type == "platform" and skill.visibility == "public"),
+        "yaml_definition": yml,
+        "inputs_schema": yml.get("inputs_schema") or [],
+        "workflow_summary": [
+            {
+                "step_id": s.get("step_id"),
+                "agent": s.get("agent"),
+                "task_type": s.get("task_type"),
+                "depends_on": s.get("depends_on") or [],
+                "phase": s.get("phase"),
+            }
+            for s in (yml.get("workflow") or [])
+        ],
+        "delivery": yml.get("delivery"),
+        "anti_signals": list(yml.get("anti_signals") or []),
+    }
 
 
 @router.post("/skills/{skill_id}/subscribe")

@@ -214,3 +214,70 @@ async def switch_work_mode(
             "to": body.target,
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────────
+# 群成员列表(主会话 7 / 普通群 5 / 私聊 1 — 铁律 18 + ADR-013)
+# ─────────────────────────────────────────────────────────────────
+class AgentMember(BaseModel):
+    id: str        # ceo_assistant / agent_1..4 / hr / finance_manager
+    status: str    # working / idle / fishing / training
+
+
+# 主会话:7 角色;普通群:5 角色(无 HR / 财务,铁律 18)
+_MAIN_SESSION_ROLES = (
+    "ceo_assistant",
+    "agent_1",
+    "agent_2",
+    "agent_3",
+    "agent_4",
+    "hr",
+    "finance_manager",
+)
+_GROUP_ROLES = ("ceo_assistant", "agent_1", "agent_2", "agent_3", "agent_4")
+
+
+def _members_for_mode(mode: str, *, private_chat_agent_id: str | None = None) -> list[str]:
+    if mode == "main_session":
+        return list(_MAIN_SESSION_ROLES)
+    if mode == "group":
+        return list(_GROUP_ROLES)
+    if mode == "private_chat":
+        return [private_chat_agent_id or "ceo_assistant"]
+    return []
+
+
+@router.get("/{conversation_id}/members", response_model=list[AgentMember])
+async def list_members(
+    conversation_id: UUID,
+    user_id: UUID = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[AgentMember]:
+    """会话成员 + 各自当前工作状态(派生自 agent_status 表)。"""
+    conv = await session.get(Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
+    if conv.user_id != user_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "无权访问")
+
+    role_ids = _members_for_mode(conv.mode, private_chat_agent_id=conv.private_chat_agent_id)
+    if not role_ids:
+        return []
+
+    # 一次查 agent_status,合并状态
+    from app.models.agent_status import AgentStatus
+
+    rows = (
+        await session.execute(
+            select(AgentStatus).where(
+                AgentStatus.user_id == user_id,
+                AgentStatus.agent_id.in_(role_ids),
+            )
+        )
+    ).scalars().all()
+    status_map: dict[str, str] = {r.agent_id: r.status for r in rows}
+
+    return [
+        AgentMember(id=rid, status=status_map.get(rid, "idle"))
+        for rid in role_ids
+    ]
