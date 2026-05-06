@@ -47,8 +47,15 @@ async def set_status(
     agent_id: str,
     status: Status,
     publish: bool = True,
+    conversation_id: UUID | None = None,
 ) -> Status | None:
-    """写库 + 推 WS。返回 publish 后的状态;不合法 agent_id 返回 None。"""
+    """写库 + 推 WS。返回 publish 后的状态;不合法 agent_id 返回 None。
+
+    conversation_id:WS 事件 payload 带上,前端 patchMemberStatus(convId, ...)
+                    才能定位是哪个群的成员状态变化。LangGraph runner 派 step
+                    时会传当前 task 的 conv.id;heartbeat consumer 没有特定群,
+                    传 None(前端会按 user 全广播兜底)。
+    """
     if agent_id not in VALID_AGENTS:
         return None
     now = datetime.now(UTC)
@@ -74,15 +81,14 @@ async def set_status(
 
     if publish and prev_status != status:
         try:
-            await ws_manager.publish(
-                str(user_id),
-                {
-                    "type": WSEventType.AGENT_STATUS_CHANGED,
-                    "agent_id": agent_id,
-                    "status": status,
-                    "last_active_at": now.isoformat(),
-                },
-            )
+            payload: dict[str, str | None] = {
+                "type": WSEventType.AGENT_STATUS_CHANGED,
+                "agent_id": agent_id,
+                "status": status,
+                "last_active_at": now.isoformat(),
+                "conversation_id": str(conversation_id) if conversation_id else None,
+            }
+            await ws_manager.publish(str(user_id), payload)
         except Exception as e:
             log.warning("agent_status.publish_failed", err=str(e))
     return status

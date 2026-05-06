@@ -84,3 +84,45 @@ async def test_set_status_invalid_agent_id_returns_none(monkeypatch) -> None:
     )
     assert out is None
     publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_status_payload_carries_conversation_id(monkeypatch) -> None:
+    """新契约:WS payload 必带 conversation_id(可为 None),前端按群定位成员状态。"""
+    publish = AsyncMock()
+    monkeypatch.setattr("app.services.agent_status.ws_manager.publish", publish)
+
+    session = _stub_session(prev_status="idle")
+    from app.services.agent_status import set_status
+
+    conv_id = uuid4()
+    await set_status(
+        session,
+        user_id=uuid4(),
+        agent_id="agent_3",
+        status="working",
+        conversation_id=conv_id,
+    )
+    payload = publish.await_args.args[1]
+    assert payload["conversation_id"] == str(conv_id)
+
+
+@pytest.mark.asyncio
+async def test_set_status_payload_conversation_id_can_be_none(monkeypatch) -> None:
+    """heartbeat consumer 不带 conversation_id 时,payload 字段为 None(前端兜底广播)。"""
+    publish = AsyncMock()
+    monkeypatch.setattr("app.services.agent_status.ws_manager.publish", publish)
+
+    session = _stub_session(prev_status="idle")
+    from app.services.agent_status import set_status
+
+    await set_status(
+        session,
+        user_id=uuid4(),
+        agent_id="agent_3",
+        status="working",
+        # 不传 conversation_id
+    )
+    payload = publish.await_args.args[1]
+    assert "conversation_id" in payload
+    assert payload["conversation_id"] is None

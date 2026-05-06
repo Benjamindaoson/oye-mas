@@ -30,6 +30,10 @@ from app.models.artifact import Artifact
 from app.models.hitl_gate import HITLGate
 from app.models.skill import Skill
 from app.models.task import Task, TaskStep
+from app.orchestrator.interaction import (
+    emit_and_persist_handoff,
+    should_emit_handoff,
+)
 from app.orchestrator.langgraph_runner.compiler import build_state_graph
 from app.orchestrator.langgraph_runner.result_waiter import (
     reset_cursor,
@@ -427,6 +431,19 @@ class LangGraphTaskRunner:
     ) -> dict[str, Any]:
         """用 astream_events 边跑边推 WS,完成后镜射 state 到 DB。"""
         last_state: dict[str, Any] = {}
+        # 互动编排器(铁律 19/22):跨 Agent 交接时在群里说一句
+        prev_completed_agent: str | None = None
+        handoffs_so_far = 0
+        # 取 task 一次,缓存 conversation_id / scenario / 各 step 的 phase
+        task_cache = await self.session.get(Task, task_id)
+        scenario: str | None = None
+        if task_cache is not None and task_cache.skill_id is not None:
+            try:
+                yml = await self._load_skill_yaml(task_cache)
+                scenario = yml.get("scenario")
+            except Exception as e:  # noqa: BLE001
+                log.warning("lg.load_skill_yaml_for_scenario_failed", err=str(e))
+
         # 用 astream_events v2 拿节点开始/结束 + state 更新
         async for event in graph.astream_events(input_or_command, config, version="v2"):
             ev = event.get("event")
@@ -475,17 +492,54 @@ class LangGraphTaskRunner:
                             ),
                         },
                     )
-                    # Agent → idle
-                    if step_result.get("agent_id"):
+                    # Agent → idle(带 conversation_id 让前端定位群成员栏)
+                    current_agent = step_result.get("agent_id")
+                    if current_agent:
                         try:
                             await set_agent_status(
                                 self.session,
                                 user_id=user_id,
-                                agent_id=step_result["agent_id"],
+                                agent_id=current_agent,
                                 status="idle",
+                                conversation_id=task_cache.conversation_id if task_cache else None,
                             )
                         except Exception as e:  # noqa: BLE001
                             log.warning("lg.set_status_failed", err=str(e))
+
+                    # 互动编排器:跨 Agent / 跨 phase 交接时在群里说一句
+                    if (
+                        current_agent
+                        and step_result.get("status") == "completed"
+                        and task_cache is not None
+                        and should_emit_handoff(
+                            prev_agent=prev_completed_agent,
+                            current_agent=current_agent,
+                            handoffs_so_far=handoffs_so_far,
+                            scenario=scenario,
+                        )
+                    ):
+                        # 交接 summary:当前 step 给的简要描述(用 task_type + ref)
+                        summary = f"{step_result.get('task_type','')} 完成"
+                        if step_result.get("artifact_ref"):
+                            summary += f",产物 {step_result['artifact_ref']}"
+                        try:
+                            msg = await emit_and_persist_handoff(
+                                self.session,
+                                conversation_id=task_cache.conversation_id,
+                                user_id=user_id,
+                                from_agent=prev_completed_agent,  # type: ignore[arg-type]
+                                to_agent=current_agent,
+                                summary=summary,
+                                scenario=scenario,
+                                task_id=task_id,
+                            )
+                            if msg is not None:
+                                handoffs_so_far += 1
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("lg.emit_handoff_failed", err=str(e))
+
+                    if current_agent and step_result.get("status") == "completed":
+                        prev_completed_agent = current_agent
 
         # 取最终 state
         snap = await graph.aget_state(config)
