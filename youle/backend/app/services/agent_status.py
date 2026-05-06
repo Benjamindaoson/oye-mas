@@ -19,6 +19,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_status import AgentStatus
+from app.schemas.ws import WSEventType
+from app.ws.manager import ws_manager
 
 log = structlog.get_logger(__name__)
 
@@ -39,28 +41,51 @@ def derive_status(*, current: Status, last_active_at: datetime) -> Status:
 
 
 async def set_status(
-    session: AsyncSession, *, user_id: UUID, agent_id: str, status: Status
-) -> None:
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    agent_id: str,
+    status: Status,
+    publish: bool = True,
+) -> Status | None:
+    """写库 + 推 WS。返回 publish 后的状态;不合法 agent_id 返回 None。"""
     if agent_id not in VALID_AGENTS:
-        return
+        return None
+    now = datetime.now(UTC)
+    # 读旧状态以避免无变化的噪声推送
+    prev = await session.get(AgentStatus, (user_id, agent_id))
+    prev_status = prev.status if prev else None
+
     stmt = (
         pg_insert(AgentStatus)
         .values(
             user_id=user_id,
             agent_id=agent_id,
             status=status,
-            last_active_at=datetime.now(UTC),
+            last_active_at=now,
         )
         .on_conflict_do_update(
             index_elements=["user_id", "agent_id"],
-            set_={
-                "status": status,
-                "last_active_at": datetime.now(UTC),
-            },
+            set_={"status": status, "last_active_at": now},
         )
     )
     await session.execute(stmt)
     await session.commit()
+
+    if publish and prev_status != status:
+        try:
+            await ws_manager.publish(
+                str(user_id),
+                {
+                    "type": WSEventType.AGENT_STATUS_CHANGED,
+                    "agent_id": agent_id,
+                    "status": status,
+                    "last_active_at": now.isoformat(),
+                },
+            )
+        except Exception as e:
+            log.warning("agent_status.publish_failed", err=str(e))
+    return status
 
 
 async def list_status(
