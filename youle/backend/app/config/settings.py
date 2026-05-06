@@ -64,8 +64,10 @@ class Settings(BaseSettings):
     # ── 监控 ──
     SENTRY_DSN: str = ""
 
-    # ── LangGraph 接入(铁律 1 调度内核换装,默认关 = V1 走 TaskRunner;V1.5 切此 flag)──
-    USE_LANGGRAPH_RUNNER: bool = False
+    # ── LangGraph 接入(对齐 CLAUDE.md §4.4:Skill 编译为 LangGraph)──
+    # 默认开:任务编排 / HITL / time-travel / streaming 全部走 LangGraph。
+    # TaskRunner(V1 自写)保留作为单测兼容兜底,prod 不再使用。
+    USE_LANGGRAPH_RUNNER: bool = True
     LANGGRAPH_CHECKPOINT_INMEMORY: bool = False
     LANGGRAPH_CHECKPOINT_URL: str = ""  # 留空 = 复用 DATABASE_URL
     LANGGRAPH_PG_POOL_MAX: int = 10

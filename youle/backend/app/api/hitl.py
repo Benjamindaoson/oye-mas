@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.models.hitl_gate import HITLGate
-from app.orchestrator.runner import TaskRunner
+from app.orchestrator.runner_factory import make_runner
 
 router = APIRouter()
 
@@ -56,7 +56,7 @@ async def approve_gate(
     body: ApproveBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
-    runner = TaskRunner(session)
+    runner = make_runner(session)
     dispatched = await runner.resolve_hitl(
         gate_id, resolution="approved", user_choice=body.user_choice
     )
@@ -70,7 +70,7 @@ async def modify_gate(
     body: ModifyBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
-    runner = TaskRunner(session)
+    runner = make_runner(session)
     dispatched = await runner.resolve_hitl(
         gate_id,
         resolution="modified",
@@ -86,7 +86,7 @@ async def cancel_gate(
     body: CancelBody,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    runner = TaskRunner(session)
+    runner = make_runner(session)
     await runner.resolve_hitl(
         gate_id, resolution="cancelled", user_choice={"reason": body.reason}
     )
